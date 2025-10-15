@@ -15,6 +15,10 @@
       padding: 16px 24px;
       background: #1e293b;
       border-bottom: 1px solid #334155;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
     }
     main {
       padding: 24px;
@@ -26,14 +30,46 @@
       font-size: 22px;
     }
     form {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-      gap: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
       margin-bottom: 16px;
       background: #1e293b;
       padding: 16px;
       border-radius: 8px;
       border: 1px solid #334155;
+    }
+    .form-row {
+      display: flex;
+      gap: 16px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+    }
+    .form-main {
+      flex: 1;
+      min-width: 0;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+    }
+    .form-actions {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+      justify-content: flex-end;
+      min-width: 200px;
+    }
+    @media (max-width: 768px) {
+      .form-row {
+        flex-direction: column;
+      }
+      .form-actions {
+        width: 100%;
+        justify-content: flex-start;
+      }
+    }
+    .hidden {
+      display: none !important;
     }
     label {
       display: flex;
@@ -63,12 +99,28 @@
       background: #111827;
       border-radius: 8px;
       overflow: hidden;
+      table-layout: fixed;
     }
     th, td {
       padding: 6px 10px;
       border-bottom: 1px solid #1f2937;
       vertical-align: top;
       font-size: 13px;
+    }
+    td {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    th.col-time, td.col-time { width: 140px; }
+    th.col-container, td.col-container { width: 150px; }
+    th.col-container-id, td.col-container-id { width: 140px; }
+    th.col-level, td.col-level { width: 90px; }
+    th.col-stream, td.col-stream { width: 80px; }
+    th.col-message, td.col-message { width: auto; }
+    td.col-message {
+      white-space: normal;
+      overflow: visible;
     }
     th {
       background: #1e293b;
@@ -157,41 +209,40 @@
       background: #1f2937;
       color: #cbd5f5;
     }
-    .container-cell {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-    }
     .container-id {
       font-size: 12px;
       color: #94a3b8;
       font-family: "JetBrains Mono", "SFMono-Regular", monospace;
     }
-    .input-with-quick {
+    .input-group {
       display: flex;
-      flex-direction: column;
       gap: 8px;
+      align-items: center;
     }
-    .quick-select {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-    }
-    .quick-select button {
-      background: #1e293b;
+    .input-group select {
+      padding: 8px;
+      border-radius: 6px;
       border: 1px solid #334155;
-      padding: 4px 10px;
-      font-size: 12px;
-      color: #e2e8f0;
+      background: #1e293b;
+      color: #f8fafc;
+      min-width: 120px;
     }
-    .quick-select button:hover {
-      background: #2563eb;
-      color: #fff;
-    }
-    .totals {
+    .summary {
       margin-bottom: 12px;
       font-size: 13px;
       color: #94a3b8;
+      display: flex;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+    .hidden-status {
+      display: none;
+    }
+    .advanced-section {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      margin-top: 8px;
     }
     .pagination {
       display: flex;
@@ -229,90 +280,203 @@
       gap: 12px;
       align-items: center;
     }
+    .secondary-button {
+      background: #1e293b;
+      border: 1px solid #334155;
+      color: #e2e8f0;
+    }
+    .secondary-button:hover {
+      background: #2563eb;
+      color: #fff;
+    }
+    .header-info {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 16px;
+      text-align: right;
+      font-size: 13px;
+      color: #cbd5f5;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .header-info span {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .header-info span strong {
+      color: #f8fafc;
+    }
+    .container-combo {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .container-combo input {
+      flex: 1;
+      padding: 8px;
+      border-radius: 6px;
+      border: 1px solid #334155;
+      background: #0f172a;
+      color: #f8fafc;
+    }
+    .container-combo input:focus {
+      outline: 2px solid #2563eb;
+      border-color: #2563eb;
+    }
+    .combo-toggle {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 6px;
+      padding: 7px 10px;
+      cursor: pointer;
+      color: #f8fafc;
+    }
+    .combo-toggle:hover {
+      background: #2563eb;
+    }
+    .combo-menu {
+      position: absolute;
+      top: calc(100% + 4px);
+      left: 0;
+      right: 0;
+      max-height: 240px;
+      overflow-y: auto;
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 6px;
+      box-shadow: 0 10px 30px rgba(15, 23, 42, 0.6);
+      z-index: 10;
+    }
+    .combo-menu.hidden {
+      display: none;
+    }
+    .combo-item {
+      padding: 8px 12px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .combo-item:hover,
+    .combo-item.active {
+      background: rgba(37, 99, 235, 0.2);
+    }
+    .combo-item.selected {
+      font-weight: 600;
+      color: #93c5fd;
+    }
+    .combo-empty {
+      padding: 8px 12px;
+      color: #94a3b8;
+      font-size: 12px;
+    }
   </style>
 </head>
 <body>
   <header>
     <h1>xlog 日志搜索</h1>
+    <div class="header-info">
+      <span>容器: <strong id="stats-containers">--</strong></span>
+      <span>日志: <strong id="stats-logs">--</strong></span>
+      <span>容量: <strong id="stats-size">--</strong></span>
+    </div>
   </header>
   <main>
     <form id="query-form">
-      <label>
-        容器
-        <select id="container-select">
-          <option value="">全部容器</option>
-        </select>
-      </label>
-      <label>
-        关键字
-        <input type="text" id="search-input" placeholder="支持模糊匹配" />
-      </label>
-      <label>
-        限制条数
-        <input type="number" id="limit-input" min="1" max="1000" value="200" />
-      </label>
-      <label>
-        流类型
-        <select id="stream-select">
-          <option value="">全部</option>
-          <option value="stdout">stdout</option>
-          <option value="stderr">stderr</option>
-        </select>
-      </label>
-      <label>
-        日志等级
-        <select id="level-select">
-          <option value="">全部</option>
-          <option value="trace">TRACE</option>
-          <option value="debug">DEBUG</option>
-          <option value="info">INFO</option>
-          <option value="warn">WARN</option>
-          <option value="error">ERROR</option>
-          <option value="fatal">FATAL</option>
-          <option value="panic">PANIC</option>
-        </select>
-      </label>
-      <label>
-        起始时间/范围
-        <div class="input-with-quick">
-          <input type="text" id="since-input" placeholder="如 15m 或 2024-05-01T12:00:00Z" />
-          <div class="quick-select" data-target="since-input">
-            <button type="button" data-value="5m">5m</button>
-            <button type="button" data-value="10m">10m</button>
-            <button type="button" data-value="30m">30m</button>
-            <button type="button" data-value="1h">1h</button>
-            <button type="button" data-value="6h">6h</button>
+      <div class="form-row">
+        <div class="form-main">
+          <label>
+            容器
+            <div class="container-combo" id="container-combo">
+              <input type="text" id="container-input" placeholder="输入关键字筛选容器" autocomplete="off" />
+              <button type="button" id="container-toggle" class="combo-toggle" aria-haspopup="listbox" aria-expanded="false">▾</button>
+              <div id="container-menu" class="combo-menu hidden" role="listbox"></div>
+            </div>
+          </label>
+          <label>
+            关键字
+            <input type="text" id="search-input" placeholder="支持模糊匹配" />
+          </label>
+          <label>
+            起始时间/范围
+            <div class="input-group">
+              <input type="text" id="since-input" placeholder="如 15m 或 2024-05-01T12:00:00Z" />
+              <select id="since-select">
+                <option value="">快捷选择</option>
+                <option value="5m">近 5 分钟</option>
+                <option value="10m">近 10 分钟</option>
+                <option value="30m">近 30 分钟</option>
+                <option value="1h">近 1 小时</option>
+                <option value="6h">近 6 小时</option>
+                <option value="24h">近 24 小时</option>
+              </select>
+            </div>
+          </label>
+        </div>
+        <div class="form-actions">
+          <div class="controls">
+            <button type="submit">查询</button>
+            <button type="button" id="refresh-btn" class="secondary-button">刷新容器</button>
+            <button type="button" id="advanced-toggle" class="secondary-button" aria-expanded="false">展开高级筛选</button>
           </div>
         </div>
-      </label>
-      <label>
-        截止时间
-        <div class="input-with-quick">
-          <input type="text" id="until-input" placeholder="可选，RFC3339 或时长" />
-          <div class="quick-select" data-target="until-input">
-            <button type="button" data-value="now">现在</button>
-            <button type="button" data-value="">清除</button>
+      </div>
+      <div id="advanced-section" class="advanced-section hidden">
+        <label>
+          限制条数
+          <input type="number" id="limit-input" min="1" max="1000" value="200" />
+        </label>
+        <label>
+          流类型
+          <select id="stream-select">
+            <option value="">全部</option>
+            <option value="stdout">stdout</option>
+            <option value="stderr">stderr</option>
+          </select>
+        </label>
+        <label>
+          日志等级
+          <select id="level-select">
+            <option value="">全部</option>
+            <option value="trace">TRACE</option>
+            <option value="debug">DEBUG</option>
+            <option value="info">INFO</option>
+            <option value="warn">WARN</option>
+            <option value="error">ERROR</option>
+            <option value="fatal">FATAL</option>
+            <option value="panic">PANIC</option>
+          </select>
+        </label>
+        <label>
+          截止时间
+          <div class="input-group">
+            <input type="text" id="until-input" placeholder="可选，RFC3339 或时长" />
+            <select id="until-select">
+              <option value="">快捷选择</option>
+              <option value="now">现在</option>
+              <option value="__clear">清除</option>
+            </select>
           </div>
-        </div>
-      </label>
-      <label style="align-self: end;">
-        &nbsp;
-        <div class="controls">
-          <button type="submit">查询</button>
-          <button type="button" id="refresh-btn">刷新容器</button>
-        </div>
-      </label>
+        </label>
+      </div>
     </form>
-    <div id="status">等待查询…</div>
-    <div id="totals" class="totals">总计: --</div>
+    <div id="status" class="hidden-status">等待查询…</div>
+    <div id="summary" class="summary">
+      <span id="status-text">等待查询…</span>
+      <span id="totals">总计: --</span>
+    </div>
     <table>
       <thead>
         <tr>
-          <th>时间</th>
-          <th>容器</th>
-          <th>等级</th>
-          <th>流</th>
-          <th>内容</th>
+          <th class="col-time">时间</th>
+          <th class="col-container">容器</th>
+          <th class="col-container-id">容器 ID</th>
+          <th class="col-level">等级</th>
+          <th class="col-stream">流</th>
+          <th class="col-message">内容</th>
         </tr>
       </thead>
       <tbody id="log-table-body">
@@ -325,47 +489,181 @@
     </div>
   </main>
   <script>
+    const containerCombo = document.getElementById('container-combo');
+    const containerInput = document.getElementById('container-input');
+    const containerToggle = document.getElementById('container-toggle');
+    const containerMenu = document.getElementById('container-menu');
+    const sinceInput = document.getElementById('since-input');
+    const untilInput = document.getElementById('until-input');
+    const sinceSelect = document.getElementById('since-select');
+    const untilSelect = document.getElementById('until-select');
+    const advancedToggle = document.getElementById('advanced-toggle');
+    const advancedSection = document.getElementById('advanced-section');
+
     let currentParams = {};
     let currentPage = 1;
     let currentLimit = 200;
     let totalRecords = 0;
+    let allContainers = [];
+    let filteredContainers = [];
+    let visibleContainers = [];
+    let selectedContainer = '';
+    let menuOpen = false;
+    let highlightIndex = -1;
+    let advancedVisible = false;
+    const numberFormatter = new Intl.NumberFormat('zh-CN');
 
     async function fetchContainers(selected) {
       try {
         const res = await fetch('/api/containers');
         const data = await res.json();
-        const select = document.getElementById('container-select');
-        const current = select.value;
-        select.innerHTML = '<option value="">全部容器</option>';
-        data.forEach(name => {
-          const option = document.createElement('option');
-          option.value = name;
-          option.textContent = name;
-          select.appendChild(option);
-        });
-        const target = selected ?? current;
-        if (target) {
-          const exists = Array.from(select.options).some(opt => opt.value === target);
-          if (!exists) {
-            const option = document.createElement('option');
-            option.value = target;
-            option.textContent = target + ' (无日志)';
-            select.appendChild(option);
-          }
-          select.value = target;
-        }
+        allContainers = Array.isArray(data) ? data : [];
+        const target = selected ?? selectedContainer ?? containerInput.value.trim();
+        setSelectedContainer(target || '', { render: false });
+        renderContainerOptions();
       } catch (err) {
         setStatus('获取容器列表失败: ' + err.message);
+      }
+    }
+
+    function renderContainerOptions(preserveHighlight = false) {
+      const filterValue = containerInput.value.trim().toLowerCase();
+      filteredContainers = filterValue
+        ? allContainers.filter(name => name.toLowerCase().includes(filterValue))
+        : [...allContainers];
+      visibleContainers = filteredContainers.slice(0, 200);
+
+      containerMenu.innerHTML = '';
+
+      if (!preserveHighlight) {
+        highlightIndex = selectedContainer
+          ? visibleContainers.findIndex(name => name === selectedContainer)
+          : -1;
+      }
+
+      if (visibleContainers.length === 0) {
+        highlightIndex = -1;
+        const empty = document.createElement('div');
+        empty.className = 'combo-empty';
+        empty.textContent = '无匹配容器';
+        containerMenu.appendChild(empty);
+        return;
+      }
+
+      if (highlightIndex >= visibleContainers.length) {
+        highlightIndex = visibleContainers.length - 1;
+      }
+      if (highlightIndex < 0) {
+        highlightIndex = 0;
+      }
+
+      const fragment = document.createDocumentFragment();
+      visibleContainers.forEach((name, index) => {
+        const item = document.createElement('div');
+        item.className = 'combo-item';
+        if (index === highlightIndex) {
+          item.classList.add('active');
+        }
+        if (name === selectedContainer) {
+          item.classList.add('selected');
+        }
+        item.textContent = name;
+        item.dataset.index = String(index);
+        item.addEventListener('mousedown', (event) => {
+          event.preventDefault();
+          setSelectedContainer(name);
+          closeContainerMenu();
+        });
+        fragment.appendChild(item);
+      });
+
+      containerMenu.appendChild(fragment);
+      ensureHighlightedVisible();
+    }
+
+    function openContainerMenu(preserveHighlight = false) {
+      if (!menuOpen) {
+        menuOpen = true;
+        containerMenu.classList.remove('hidden');
+      }
+      containerToggle.setAttribute('aria-expanded', 'true');
+      renderContainerOptions(preserveHighlight);
+      updateMenuHighlight();
+    }
+
+    function closeContainerMenu() {
+      if (!menuOpen) {
+        return;
+      }
+      menuOpen = false;
+      containerMenu.classList.add('hidden');
+      containerToggle.setAttribute('aria-expanded', 'false');
+      highlightIndex = -1;
+    }
+
+    function setSelectedContainer(value, options = {}) {
+      selectedContainer = (value || '').trim();
+      if (!options.keepInput) {
+        containerInput.value = selectedContainer;
+      }
+      const idx = visibleContainers.findIndex(name => name === selectedContainer);
+      if (idx >= 0) {
+        highlightIndex = idx;
+      } else if (!selectedContainer) {
+        highlightIndex = -1;
+      }
+      if (options.render !== false) {
+        renderContainerOptions(true);
+      }
+    }
+
+    function updateMenuHighlight() {
+      const items = containerMenu.querySelectorAll('.combo-item');
+      items.forEach((item, index) => {
+        if (index === highlightIndex) {
+          item.classList.add('active');
+        } else {
+          item.classList.remove('active');
+        }
+      });
+      ensureHighlightedVisible();
+    }
+
+    function ensureHighlightedVisible() {
+      if (!menuOpen || highlightIndex < 0) {
+        return;
+      }
+      const item = containerMenu.querySelector(`.combo-item[data-index="${highlightIndex}"]`);
+      if (item) {
+        item.scrollIntoView({ block: 'nearest' });
+      }
+    }
+
+    function setAdvancedVisible(visible) {
+      advancedVisible = visible;
+      if (advancedSection) {
+        advancedSection.classList.toggle('hidden', !visible);
+      }
+      if (advancedToggle) {
+        advancedToggle.textContent = visible ? '收起高级筛选' : '展开高级筛选';
+        advancedToggle.setAttribute('aria-expanded', visible ? 'true' : 'false');
       }
     }
 
     function setStatus(text) {
       const el = document.getElementById('status');
       el.textContent = text;
+      const summaryStatus = document.getElementById('status-text');
+      if (summaryStatus) {
+        summaryStatus.textContent = text;
+      }
     }
 
     function setTotals(count) {
       const el = document.getElementById('totals');
+      if (!el) {
+        return;
+      }
       el.textContent = `总计: ${count}`;
     }
 
@@ -416,14 +714,12 @@
         const levelClass = level ? `level-badge level-${level}` : 'level-badge';
         const containerId = (log.containerId || '').substring(0, 12);
         row.innerHTML = `
-          <td class="timestamp">${escapeHtml(formatTime(log.timestamp))}</td>
-          <td class="container-cell">
-            <span>${escapeHtml(log.containerName || '(unknown)')}</span>
-            <span class="container-id">${escapeHtml(containerId)}</span>
-          </td>
-          <td><span class="${levelClass}">${escapeHtml(levelLabel)}</span></td>
-          <td>${escapeHtml(log.stream)}</td>
-          <td class="message"></td>
+          <td class="col-time timestamp">${escapeHtml(formatTime(log.timestamp))}</td>
+          <td class="col-container">${escapeHtml(log.containerName || '(unknown)')}</td>
+          <td class="col-container-id container-id">${escapeHtml(containerId)}</td>
+          <td class="col-level"><span class="${levelClass}">${escapeHtml(levelLabel)}</span></td>
+          <td class="col-stream">${escapeHtml(log.stream)}</td>
+          <td class="col-message message"></td>
         `;
         const messageCell = row.querySelector('.message');
         renderMessageContent(messageCell, log.message);
@@ -437,6 +733,28 @@
         return value;
       }
       return date.toLocaleString();
+    }
+
+    function formatNumber(value) {
+      if (typeof value !== 'number' || !Number.isFinite(value)) {
+        return '--';
+      }
+      return numberFormatter.format(value);
+    }
+
+    function formatBytes(bytes) {
+      if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes < 0) {
+        return '--';
+      }
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      let size = bytes;
+      let unitIndex = 0;
+      while (size >= 1024 && unitIndex < units.length - 1) {
+        size /= 1024;
+        unitIndex++;
+      }
+      const precision = unitIndex === 0 ? 0 : 1;
+      return `${size.toFixed(precision)} ${units[unitIndex]}`;
     }
 
     function escapeHtml(text) {
@@ -473,6 +791,34 @@
       cell.textContent = raw;
     }
 
+    async function refreshStats() {
+      try {
+        const res = await fetch('/api/stats');
+        if (!res.ok) {
+          throw new Error(await res.text());
+        }
+        const data = await res.json();
+        updateHeaderStats(data);
+      } catch (err) {
+        updateHeaderStats(null);
+      }
+    }
+
+    function updateHeaderStats(stats) {
+      const containersEl = document.getElementById('stats-containers');
+      const logsEl = document.getElementById('stats-logs');
+      const sizeEl = document.getElementById('stats-size');
+      if (!stats) {
+        containersEl.textContent = '--';
+        logsEl.textContent = '--';
+        sizeEl.textContent = '--';
+        return;
+      }
+      containersEl.textContent = formatNumber(stats.containers ?? stats.containerCount ?? 0);
+      logsEl.textContent = formatNumber(stats.logs ?? stats.logCount ?? 0);
+      sizeEl.textContent = formatBytes(stats.sizeBytes ?? 0);
+    }
+
     async function fetchLogs(params) {
       currentParams = { ...params };
       const query = new URLSearchParams(currentParams);
@@ -495,20 +841,23 @@
         totalRecords = total;
 
         const totalPages = currentLimit > 0 ? Math.max(1, Math.ceil(totalRecords / currentLimit)) : 1;
-        setStatus(`第 ${currentPage} / ${totalPages} 页，当前 ${items.length} 条`);
+        const summaryMessage = `第 ${currentPage} / ${totalPages} 页，当前 ${items.length} 条`;
+        setStatus(summaryMessage);
         setTotals(totalRecords);
         updatePagination(totalRecords, currentPage, currentLimit);
+        refreshStats();
       } catch (err) {
         setStatus('查询失败: ' + err.message);
         setTotals('--');
         updatePagination(0, 1, currentLimit, true);
+        refreshStats();
       }
     }
 
     function buildParamsFromForm() {
       const params = {};
-      const container = document.getElementById('container-select').value.trim();
-      if (container) params.container = container;
+      const containerValue = (selectedContainer || containerInput.value).trim();
+      if (containerValue) params.container = containerValue;
       const search = document.getElementById('search-input').value.trim();
       if (search) params.search = search;
       const limit = document.getElementById('limit-input').value.trim();
@@ -541,22 +890,110 @@
     });
 
     document.getElementById('refresh-btn').addEventListener('click', () => {
-      const current = document.getElementById('container-select').value;
+      const current = (selectedContainer || containerInput.value).trim();
       fetchContainers(current);
     });
 
     document.getElementById('prev-page').addEventListener('click', () => changePage(-1));
     document.getElementById('next-page').addEventListener('click', () => changePage(1));
 
-    document.querySelectorAll('.quick-select button').forEach(button => {
-      button.addEventListener('click', (event) => {
-        const targetId = event.currentTarget.parentElement.dataset.target;
-        const input = document.getElementById(targetId);
-        const value = event.currentTarget.dataset.value;
-        input.value = value;
-        input.dispatchEvent(new Event('input'));
-      });
+    containerInput.addEventListener('focus', () => {
+      openContainerMenu();
     });
+
+    containerInput.addEventListener('input', () => {
+      selectedContainer = '';
+      highlightIndex = -1;
+      openContainerMenu();
+    });
+
+    if (sinceSelect && sinceInput) {
+      sinceSelect.addEventListener('change', () => {
+        const value = sinceSelect.value;
+        if (!value) {
+          return;
+        }
+        sinceInput.value = value;
+      });
+    }
+
+    if (untilSelect && untilInput) {
+      untilSelect.addEventListener('change', () => {
+        const value = untilSelect.value;
+        if (value === 'now') {
+          untilInput.value = new Date().toISOString();
+        } else if (value === '__clear') {
+          untilInput.value = '';
+          untilSelect.value = '';
+        }
+      });
+    }
+
+    containerInput.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowDown') {
+        if (!menuOpen) {
+          openContainerMenu();
+        }
+        if (visibleContainers.length === 0) {
+          return;
+        }
+        event.preventDefault();
+        highlightIndex = (highlightIndex + 1) % visibleContainers.length;
+        updateMenuHighlight();
+      } else if (event.key === 'ArrowUp') {
+        if (!menuOpen) {
+          openContainerMenu();
+        }
+        if (visibleContainers.length === 0) {
+          return;
+        }
+        event.preventDefault();
+        highlightIndex = (highlightIndex - 1 + visibleContainers.length) % visibleContainers.length;
+        updateMenuHighlight();
+      } else if (event.key === 'Enter') {
+        if (menuOpen && highlightIndex >= 0 && highlightIndex < visibleContainers.length) {
+          event.preventDefault();
+          setSelectedContainer(visibleContainers[highlightIndex]);
+          closeContainerMenu();
+        }
+      } else if (event.key === 'Escape') {
+        if (menuOpen) {
+          event.preventDefault();
+          closeContainerMenu();
+        }
+      }
+    });
+
+    containerToggle.addEventListener('click', () => {
+      if (menuOpen) {
+        closeContainerMenu();
+      } else {
+        openContainerMenu();
+      }
+    });
+
+    document.addEventListener('click', (event) => {
+      if (!containerCombo.contains(event.target)) {
+        closeContainerMenu();
+      }
+    });
+
+    if (advancedToggle) {
+      advancedToggle.addEventListener('click', () => {
+        setAdvancedVisible(!advancedVisible);
+      });
+    }
+
+    function adjustAdvancedColumns() {
+      if (!advancedSection) return;
+      if (window.innerWidth < 600) {
+        advancedSection.style.gridTemplateColumns = '1fr';
+      } else {
+        advancedSection.style.gridTemplateColumns = 'repeat(auto-fit, minmax(220px, 1fr))';
+      }
+    }
+
+    window.addEventListener('resize', adjustAdvancedColumns);
 
     function changePage(delta) {
       const totalPages = currentLimit > 0 ? Math.max(1, Math.ceil(totalRecords / currentLimit)) : 1;
@@ -574,12 +1011,26 @@
       document.getElementById('search-input').value = initialParams.search;
     }
     document.getElementById('limit-input').value = initialParams.limit || '200';
+    currentLimit = Number(document.getElementById('limit-input').value) || 200;
     if (initialParams.stream) {
       document.getElementById('stream-select').value = initialParams.stream;
     }
     if (initialParams.level) {
       document.getElementById('level-select').value = initialParams.level;
     }
+    const initialContainer = initialParams.container || '';
+    if (initialContainer) {
+      setSelectedContainer(initialContainer, { render: false });
+    } else {
+      setSelectedContainer('', { render: false });
+    }
+    const advancedShouldShow = Boolean(
+      (initialParams.limit && initialParams.limit !== '200') ||
+      initialParams.stream ||
+      initialParams.level ||
+      initialParams.until
+    );
+    setAdvancedVisible(advancedShouldShow);
     if (initialParams.since) {
       document.getElementById('since-input').value = initialParams.since;
     }
@@ -587,16 +1038,16 @@
       document.getElementById('until-input').value = initialParams.until;
     }
 
-    fetchContainers(initialParams.container).then(() => {
-      if (initialParams.container) {
-        const select = document.getElementById('container-select');
-        select.value = initialParams.container;
-      }
+    fetchContainers(initialContainer).then(() => {
       if (Object.keys(initialParams).length > 0) {
         fetchLogs(initialParams);
       }
       updatePagination(0, 1, currentLimit, true);
     });
+
+    refreshStats();
+    setInterval(refreshStats, 60000);
+    adjustAdvancedColumns();
   </script>
 </body>
 </html>

@@ -38,8 +38,15 @@ type LogQuery struct {
 
 // LogResult 为查询结果。
 type LogResult struct {
-	Entries []LogEntry
-	Total   int64
+	Entries []LogEntry `json:"items"`
+	Total   int64      `json:"total"`
+}
+
+// Stats 汇总信息。
+type Stats struct {
+	ContainerCount int64 `json:"containers"`
+	LogCount       int64 `json:"logs"`
+	SizeBytes      int64 `json:"sizeBytes"`
 }
 
 // Store 定义日志存储需要实现的接口。
@@ -48,12 +55,16 @@ type Store interface {
 	InsertLog(ctx context.Context, entry LogEntry) error
 	QueryLogs(ctx context.Context, q LogQuery) (LogResult, error)
 	ListContainers(ctx context.Context) ([]string, error)
+	CleanupOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
+	CleanupExceedingSize(ctx context.Context, maxBytes int64) (int64, error)
+	Stats(ctx context.Context) (Stats, error)
 	Close() error
 }
 
 // DuckDBStore 基于 DuckDB 的实现。
 type DuckDBStore struct {
-	db *sql.DB
+	db   *sql.DB
+	path string
 }
 
 // NewDuckDB 创建 DuckDB 存储实例。
@@ -61,13 +72,17 @@ func NewDuckDB(path string) (*DuckDBStore, error) {
 	if err := ensureDir(path); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("duckdb", fmt.Sprintf("%s?access_mode=read_write", path))
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("duckdb", fmt.Sprintf("%s?access_mode=read_write", absPath))
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	return &DuckDBStore{db: db}, nil
+	return &DuckDBStore{db: db, path: absPath}, nil
 }
 
 // Init 初始化日志表与索引。
@@ -219,6 +234,95 @@ func (s *DuckDBStore) ListContainers(ctx context.Context) ([]string, error) {
 		}
 	}
 	return names, rows.Err()
+}
+
+// CleanupOlderThan 删除在 cutoff 之前的日志。
+func (s *DuckDBStore) CleanupOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx, "DELETE FROM logs WHERE timestamp < ?", cutoff.UTC())
+	if err != nil {
+		return 0, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if affected > 0 {
+		_ = s.vacuum(ctx)
+	}
+	return affected, nil
+}
+
+// CleanupExceedingSize 按容量限制清理历史日志。
+func (s *DuckDBStore) CleanupExceedingSize(ctx context.Context, maxBytes int64) (int64, error) {
+	if maxBytes <= 0 {
+		return 0, nil
+	}
+	var totalDeleted int64
+	const batchSize = 2000
+	for {
+		size, err := s.fileSize()
+		if err != nil {
+			return totalDeleted, err
+		}
+		if size <= maxBytes {
+			break
+		}
+		res, err := s.db.ExecContext(ctx, "DELETE FROM logs WHERE id IN (SELECT id FROM logs ORDER BY timestamp ASC LIMIT ?)", batchSize)
+		if err != nil {
+			return totalDeleted, err
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return totalDeleted, err
+		}
+		if affected == 0 {
+			break
+		}
+		totalDeleted += affected
+	}
+	if totalDeleted > 0 {
+		_ = s.vacuum(ctx)
+	}
+	return totalDeleted, nil
+}
+
+// Stats 返回聚合信息。
+func (s *DuckDBStore) Stats(ctx context.Context) (Stats, error) {
+	var result Stats
+	row := s.db.QueryRowContext(ctx, `
+		SELECT
+			COUNT(DISTINCT CASE WHEN container_name IS NULL OR container_name = '' THEN NULL ELSE container_name END),
+			COUNT(*)
+		FROM logs
+	`)
+	if err := row.Scan(&result.ContainerCount, &result.LogCount); err != nil {
+		return Stats{}, err
+	}
+	size, err := s.fileSize()
+	if err != nil {
+		return Stats{}, err
+	}
+	result.SizeBytes = size
+	return result, nil
+}
+
+func (s *DuckDBStore) vacuum(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, "VACUUM")
+	return err
+}
+
+func (s *DuckDBStore) fileSize() (int64, error) {
+	if s.path == "" {
+		return 0, fmt.Errorf("database path unset")
+	}
+	info, err := os.Stat(s.path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return info.Size(), nil
 }
 
 // Close 关闭数据库连接。

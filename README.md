@@ -7,8 +7,9 @@
 - 监听 Docker 中所有容器的 stdout/stderr 日志，自动感知容器的新增/停止。
 - 使用 DuckDB 作为嵌入式存储，支持高效的本地查询与持久化。
 - 按容器名分组存储日志，保留日志时间、来源流信息。
-- 提供前端页面可筛选容器、日志关键字、时间范围、条数上限。
+- 提供前端页面可筛选容器（含关键字过滤）、日志等级/关键字、时间范围及分页浏览。
 - 提供 `/api/logs`、`/api/containers` REST 接口，方便二次集成。
+- 提供全局统计与自动清理策略，支持按时间或容量定期清理历史日志。
 
 ## 快速开始
 
@@ -61,6 +62,28 @@ docker compose up -d --build
 | `XLOG_DUCKDB_PATH` | `./data/logs.duckdb` | DuckDB 数据文件路径 |
 | `XLOG_LOG_TAIL` | `200` | 重启时回溯的日志条数（传 `all` 表示全部） |
 | `XLOG_LOG_SINCE` | `15m` | 订阅容器日志的起始时间窗口（Duration 格式，`0` 表示不限制） |
+| `XLOG_CLEAN_INTERVAL` | `1h` | 后台清理任务运行间隔 |
+| `XLOG_RETENTION` | 空 | 日志保留时长（如 `720h`，为空表示不按时间清理） |
+| `XLOG_MAX_STORAGE_BYTES` | 空 | 日志数据库最大占用（支持 `512MB`、`2GB` 等写法，空表示不限制） |
+| `XLOG_CONFIG_PATH` | `/data/app.json` | 全局配置文件路径，服务启动后会写回最终配置 |
+
+## 全局配置文件
+
+服务会在启动时读取 `XLOG_CONFIG_PATH` 指向的 JSON 文件（默认 `/data/app.json`），并在合并环境变量与默认值后写回，方便下次启动沿用配置。示例：
+
+```json
+{
+  "httpAddr": "0.0.0.0:8080",
+  "dbPath": "/data/logs.duckdb",
+  "tail": "200",
+  "since": "15m0s",
+  "cleanupInterval": "1h0m0s",
+  "retention": "720h0m0s",
+  "maxStorageBytes": "2147483648"
+}
+```
+
+如需修改运行参数，可直接编辑该文件或设置对应环境变量，服务会在启动时自动合并并持久化。
 
 ## API 说明
 
@@ -85,6 +108,8 @@ docker compose up -d --build
     ```
 - `GET /api/containers`
   - 返回已存储日志的容器名称列表
+- `GET /api/stats`
+  - 返回当前容器数量、日志总数及 DuckDB 文件大小，用于前端展示
 - `GET /healthz`
   - 健康检查
 

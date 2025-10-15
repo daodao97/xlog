@@ -30,6 +30,7 @@ func New(addr string, store storage.Store) *Server {
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/api/logs", s.handleLogs)
 	mux.HandleFunc("/api/containers", s.handleContainers)
+	mux.HandleFunc("/api/stats", s.handleStats)
 	mux.HandleFunc("/", s.handleIndex)
 
 	s.httpServer = &http.Server{
@@ -136,6 +137,20 @@ func (s *Server) handleContainers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, containers)
+}
+
+func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	stats, err := s.store.Stats(r.Context())
+	if err != nil {
+		log.Printf("stats query failed: %v", err)
+		http.Error(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
 }
 
 func withLogging(next http.Handler) http.Handler {
