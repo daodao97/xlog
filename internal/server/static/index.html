@@ -513,9 +513,27 @@
     let advancedVisible = false;
     const numberFormatter = new Intl.NumberFormat('zh-CN');
 
+    function redirectToVerify() {
+      window.location.href = '/verify';
+    }
+
+    function ensureAuthorized(res) {
+      if (res.status === 401) {
+        redirectToVerify();
+        return false;
+      }
+      return true;
+    }
+
     async function fetchContainers(selected) {
       try {
         const res = await fetch('/api/containers');
+        if (!ensureAuthorized(res)) {
+          return;
+        }
+        if (!res.ok) {
+          throw new Error(await res.text());
+        }
         const data = await res.json();
         allContainers = Array.isArray(data) ? data : [];
         const target = selected ?? selectedContainer ?? containerInput.value.trim();
@@ -643,6 +661,9 @@
       advancedVisible = visible;
       if (advancedSection) {
         advancedSection.classList.toggle('hidden', !visible);
+        if (visible) {
+          adjustAdvancedColumns();
+        }
       }
       if (advancedToggle) {
         advancedToggle.textContent = visible ? '收起高级筛选' : '展开高级筛选';
@@ -794,6 +815,9 @@
     async function refreshStats() {
       try {
         const res = await fetch('/api/stats');
+        if (!ensureAuthorized(res)) {
+          return;
+        }
         if (!res.ok) {
           throw new Error(await res.text());
         }
@@ -825,6 +849,9 @@
       setStatus('查询中…');
       try {
         const res = await fetch('/api/logs?' + query.toString());
+        if (!ensureAuthorized(res)) {
+          return;
+        }
         if (!res.ok) {
           throw new Error(await res.text());
         }

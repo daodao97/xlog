@@ -10,6 +10,7 @@
 - 提供前端页面可筛选容器（含关键字过滤）、日志等级/关键字、时间范围及分页浏览。
 - 提供 `/api/logs`、`/api/containers` REST 接口，方便二次集成。
 - 提供全局统计与自动清理策略，支持按时间或容量定期清理历史日志。
+- 支持配置访问密码，未授权访问将跳转验证并写入安全 Cookie。
 
 ## 快速开始
 
@@ -66,6 +67,10 @@ docker compose up -d --build
 | `XLOG_RETENTION` | 空 | 日志保留时长（如 `720h`，为空表示不按时间清理） |
 | `XLOG_MAX_STORAGE_BYTES` | 空 | 日志数据库最大占用（支持 `512MB`、`2GB` 等写法，空表示不限制） |
 | `XLOG_CONFIG_PATH` | `/data/app.json` | 全局配置文件路径，服务启动后会写回最终配置 |
+| `XLOG_VIEW_PASSWORD` | 空 | 访问日志界面的密码，留空表示不启用认证 |
+| `XLOG_AUTH_COOKIE_NAME` | `xlog_auth` | 登录状态 Cookie 名称 |
+| `XLOG_AUTH_COOKIE_TTL` | `168h` | 登录有效期（Duration 格式），默认 7 天 |
+| `XLOG_COOKIE_SECURE` | `false` | 是否仅通过 HTTPS 发送登录 Cookie |
 
 ## 全局配置文件
 
@@ -79,11 +84,22 @@ docker compose up -d --build
   "since": "15m0s",
   "cleanupInterval": "1h0m0s",
   "retention": "720h0m0s",
-  "maxStorageBytes": "2147483648"
+  "maxStorageBytes": "2147483648",
+  "viewPassword": "your-password",
+  "authCookieName": "xlog_auth",
+  "authCookieTtl": "168h0m0s",
+  "cookieSecure": false
 }
 ```
 
-如需修改运行参数，可直接编辑该文件或设置对应环境变量，服务会在启动时自动合并并持久化。
+如需修改运行参数，可直接编辑该文件或设置对应环境变量，服务会在启动时自动合并并持久化（若配置文件路径不可写，服务会自动退回到本地 `./data/app.json` / `./app.json` 以兼容非容器环境）。
+
+## 访问控制
+
+- 设置 `XLOG_VIEW_PASSWORD`（或在配置文件 `viewPassword` 字段）后，所有页面与 API 均需要先通过 `/verify` 页面输入密码；如未显式设置，服务会在启动时自动生成随机密码并写入配置文件。
+- 验证成功后，服务会写入一个带过期时间的 HttpOnly Cookie（默认 7 天有效），后续访问自动携带。
+- 若需要强制用户使用 HTTPS，可将 `XLOG_COOKIE_SECURE=true`，Cookie 将仅在安全连接中发送。
+- 清空密码或删除配置文件字段即可关闭认证。
 
 ## API 说明
 
@@ -110,6 +126,9 @@ docker compose up -d --build
   - 返回已存储日志的容器名称列表
 - `GET /api/stats`
   - 返回当前容器数量、日志总数及 DuckDB 文件大小，用于前端展示
+- `POST /api/verify`
+  - 请求体：`{ "password": "..." }`
+  - 密码正确时返回 200 并写入登录 Cookie，否则返回 401
 - `GET /healthz`
   - 健康检查
 

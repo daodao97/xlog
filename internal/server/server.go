@@ -2,7 +2,10 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -17,20 +20,57 @@ import (
 //go:embed static/index.html
 var indexPage []byte
 
+//go:embed static/verify.html
+var verifyPage []byte
+
 // Server 提供查询接口与简单界面。
 type Server struct {
-	store      storage.Store
-	httpServer *http.Server
+	store        storage.Store
+	httpServer   *http.Server
+	authEnabled  bool
+	passwordHash string
+	cookieName   string
+	cookieTTL    time.Duration
+	cookieSecure bool
+}
+
+type Options struct {
+	Password     string
+	CookieName   string
+	CookieTTL    time.Duration
+	CookieSecure bool
 }
 
 // New 返回 Server 实例。
-func New(addr string, store storage.Store) *Server {
-	s := &Server{store: store}
+func New(addr string, store storage.Store, opts Options) *Server {
+	authEnabled := strings.TrimSpace(opts.Password) != ""
+	passwordHash := ""
+	if authEnabled {
+		passwordHash = hashPassword(opts.Password)
+	}
+	cookieName := opts.CookieName
+	if cookieName == "" {
+		cookieName = "xlog_auth"
+	}
+	cookieTTL := opts.CookieTTL
+	if cookieTTL <= 0 {
+		cookieTTL = 7 * 24 * time.Hour
+	}
+	s := &Server{
+		store:        store,
+		authEnabled:  authEnabled,
+		passwordHash: passwordHash,
+		cookieName:   cookieName,
+		cookieTTL:    cookieTTL,
+		cookieSecure: opts.CookieSecure,
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
-	mux.HandleFunc("/api/logs", s.handleLogs)
-	mux.HandleFunc("/api/containers", s.handleContainers)
-	mux.HandleFunc("/api/stats", s.handleStats)
+	mux.Handle("/api/logs", s.authRequired(http.HandlerFunc(s.handleLogs)))
+	mux.Handle("/api/containers", s.authRequired(http.HandlerFunc(s.handleContainers)))
+	mux.Handle("/api/stats", s.authRequired(http.HandlerFunc(s.handleStats)))
+	mux.HandleFunc("/api/verify", s.handleVerify)
+	mux.HandleFunc("/verify", s.handleVerifyPage)
 	mux.HandleFunc("/", s.handleIndex)
 
 	s.httpServer = &http.Server{
@@ -62,10 +102,61 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if s.authEnabled && !s.isAuthorized(r) {
+		http.Redirect(w, r, "/verify", http.StatusFound)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if _, err := w.Write(indexPage); err != nil {
 		log.Printf("write index failed: %v", err)
 	}
+}
+
+func (s *Server) handleVerifyPage(w http.ResponseWriter, r *http.Request) {
+	if !s.authEnabled {
+		http.Redirect(w, r, "/", http.StatusFound)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.isAuthorized(r) {
+		http.Redirect(w, r, "/", http.StatusFound)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if _, err := w.Write(verifyPage); err != nil {
+		log.Printf("write verify page failed: %v", err)
+	}
+}
+
+func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.authEnabled {
+		writeJSON(w, http.StatusOK, map[string]any{"authorized": true})
+		return
+	}
+	var payload struct {
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "invalid payload", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(payload.Password) == "" {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if subtle.ConstantTimeCompare([]byte(hashPassword(payload.Password)), []byte(s.passwordHash)) != 1 {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	s.setAuthCookie(w)
+	writeJSON(w, http.StatusOK, map[string]any{"authorized": true})
 }
 
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
@@ -153,6 +244,16 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, stats)
 }
 
+func (s *Server) authRequired(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.authEnabled || s.isAuthorized(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	})
+}
+
 func withLogging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -180,6 +281,37 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	}
 }
 
+func (s *Server) isAuthorized(r *http.Request) bool {
+	if !s.authEnabled {
+		return true
+	}
+	cookie, err := r.Cookie(s.cookieName)
+	if err != nil {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(s.passwordHash)) == 1
+}
+
+func (s *Server) setAuthCookie(w http.ResponseWriter) {
+	if !s.authEnabled {
+		return
+	}
+	cookie := &http.Cookie{
+		Name:     s.cookieName,
+		Value:    s.passwordHash,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   s.cookieSecure,
+	}
+	if s.cookieTTL > 0 {
+		expires := time.Now().Add(s.cookieTTL)
+		cookie.Expires = expires
+		cookie.MaxAge = int(s.cookieTTL.Seconds())
+	}
+	http.SetCookie(w, cookie)
+}
+
 func parseTimeInput(value string) (time.Time, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -195,4 +327,10 @@ func parseTimeInput(value string) (time.Time, error) {
 		return t.UTC(), nil
 	}
 	return time.Time{}, fmt.Errorf("invalid time format")
+}
+
+func hashPassword(password string) string {
+	trimmed := strings.TrimSpace(password)
+	sum := sha256.Sum256([]byte(trimmed))
+	return hex.EncodeToString(sum[:])
 }

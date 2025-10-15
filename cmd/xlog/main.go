@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
 	"os/signal"
@@ -23,15 +24,24 @@ import (
 )
 
 type config struct {
-	HTTPAddr        string
-	DBPath          string
-	Tail            string
-	Since           time.Duration
-	CleanupInterval time.Duration
-	Retention       time.Duration
-	MaxStorageBytes int64
-	ConfigPath      string
+	HTTPAddr          string
+	DBPath            string
+	Tail              string
+	Since             time.Duration
+	CleanupInterval   time.Duration
+	Retention         time.Duration
+	MaxStorageBytes   int64
+	ConfigPath        string
+	ViewPassword      string
+	AuthCookieName    string
+	AuthCookieTTL     time.Duration
+	CookieSecure      bool
+	PrimaryConfigPath string `json:"-"`
 }
+
+const defaultConfigPath = "/data/app.json"
+
+var fallbackConfigPaths = []string{"./data/app.json", "./app.json"}
 
 func main() {
 	cfg := loadConfig()
@@ -65,7 +75,12 @@ func main() {
 	log.Printf("日志采集启动: tail=%q since=%s", collectorOptions.Tail, collectorOptions.SinceDuration)
 	go collector.New(dockerCli, store, collectorOptions).Run(ctx)
 
-	httpServer := server.New(cfg.HTTPAddr, store)
+	httpServer := server.New(cfg.HTTPAddr, store, server.Options{
+		Password:     cfg.ViewPassword,
+		CookieName:   cfg.AuthCookieName,
+		CookieTTL:    cfg.AuthCookieTTL,
+		CookieSecure: cfg.CookieSecure,
+	})
 	go func() {
 		log.Printf("HTTP 服务监听 %s", cfg.HTTPAddr)
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -92,22 +107,34 @@ func loadConfig() config {
 		CleanupInterval: time.Hour,
 		Retention:       0,
 		MaxStorageBytes: 0,
-		ConfigPath:      getEnv("XLOG_CONFIG_PATH", "/data/app.json"),
+		ConfigPath:      getEnv("XLOG_CONFIG_PATH", defaultConfigPath),
+		ViewPassword:    "",
+		AuthCookieName:  getEnv("XLOG_AUTH_COOKIE_NAME", "xlog_auth"),
+		AuthCookieTTL:   7 * 24 * time.Hour,
+		CookieSecure:    false,
 	}
+	cfg.PrimaryConfigPath = cfg.ConfigPath
 
-	if fileCfg, err := readConfigFile(cfg.ConfigPath); err == nil {
+	paths := []string{cfg.ConfigPath}
+	if cfg.ConfigPath == defaultConfigPath {
+		paths = append(paths, fallbackConfigPaths...)
+	}
+	if fileCfg, pathUsed, err := loadConfigFromPaths(paths); err == nil {
+		cfg.ConfigPath = pathUsed
 		applyFileConfig(&cfg, fileCfg)
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-		log.Printf("读取配置文件失败 (%v), 使用默认配置", err)
+		log.Printf("读取配置文件失败: %v", err)
 	}
 
 	applyEnvOverrides(&cfg)
-
-	if err := saveConfig(cfg); err != nil {
-		log.Printf("保存配置文件失败: %v", err)
+	cfg.ViewPassword = strings.TrimSpace(cfg.ViewPassword)
+	if cfg.ViewPassword == "" {
+		cfg.ViewPassword = generatePassword(16)
+		log.Printf("生成随机访问密码: %s", cfg.ViewPassword)
 	}
+	persistConfig(&cfg)
 
-	log.Printf("服务配置: addr=%s db=%s tail=%s since=%s clean=%s retention=%s max=%d path=%s",
+	log.Printf("服务配置: addr=%s db=%s tail=%s since=%s clean=%s retention=%s max=%d path=%s auth=%t cookie=%s ttl=%s secure=%t",
 		cfg.HTTPAddr,
 		cfg.DBPath,
 		cfg.Tail,
@@ -116,6 +143,10 @@ func loadConfig() config {
 		cfg.Retention,
 		cfg.MaxStorageBytes,
 		cfg.ConfigPath,
+		cfg.ViewPassword != "",
+		cfg.AuthCookieName,
+		durationToString(cfg.AuthCookieTTL),
+		cfg.CookieSecure,
 	)
 
 	return cfg
@@ -136,6 +167,10 @@ type persistedConfig struct {
 	CleanupInterval string `json:"cleanupInterval"`
 	Retention       string `json:"retention"`
 	MaxStorageBytes string `json:"maxStorageBytes"`
+	ViewPassword    string `json:"viewPassword"`
+	AuthCookieName  string `json:"authCookieName"`
+	AuthCookieTTL   string `json:"authCookieTtl"`
+	CookieSecure    bool   `json:"cookieSecure"`
 }
 
 type fileConfig struct {
@@ -146,6 +181,10 @@ type fileConfig struct {
 	CleanupInterval string `json:"cleanupInterval"`
 	Retention       string `json:"retention"`
 	MaxStorageBytes string `json:"maxStorageBytes"`
+	ViewPassword    string `json:"viewPassword"`
+	AuthCookieName  string `json:"authCookieName"`
+	AuthCookieTTL   string `json:"authCookieTtl"`
+	CookieSecure    *bool  `json:"cookieSecure"`
 }
 
 func readConfigFile(path string) (fileConfig, error) {
@@ -161,6 +200,31 @@ func readConfigFile(path string) (fileConfig, error) {
 		return result, err
 	}
 	return result, nil
+}
+
+func loadConfigFromPaths(paths []string) (fileConfig, string, error) {
+	var lastErr error
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		cfg, err := readConfigFile(path)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) || isPermissionError(err) {
+				lastErr = err
+				continue
+			}
+			return fileConfig{}, path, err
+		}
+		return cfg, path, nil
+	}
+	if len(paths) == 0 {
+		return fileConfig{}, "", os.ErrNotExist
+	}
+	if lastErr == nil {
+		lastErr = os.ErrNotExist
+	}
+	return fileConfig{}, paths[0], lastErr
 }
 
 func applyFileConfig(cfg *config, fc fileConfig) {
@@ -193,6 +257,20 @@ func applyFileConfig(cfg *config, fc fileConfig) {
 			cfg.MaxStorageBytes = v
 		}
 	}
+	if fc.ViewPassword != "" {
+		cfg.ViewPassword = fc.ViewPassword
+	}
+	if fc.AuthCookieName != "" {
+		cfg.AuthCookieName = fc.AuthCookieName
+	}
+	if fc.AuthCookieTTL != "" {
+		if d, err := time.ParseDuration(fc.AuthCookieTTL); err == nil {
+			cfg.AuthCookieTTL = d
+		}
+	}
+	if fc.CookieSecure != nil {
+		cfg.CookieSecure = *fc.CookieSecure
+	}
 }
 
 func applyEnvOverrides(cfg *config) {
@@ -216,6 +294,18 @@ func applyEnvOverrides(cfg *config) {
 	}
 	if v, ok := bytesFromEnv("XLOG_MAX_STORAGE_BYTES"); ok {
 		cfg.MaxStorageBytes = v
+	}
+	if v := os.Getenv("XLOG_VIEW_PASSWORD"); v != "" {
+		cfg.ViewPassword = v
+	}
+	if v := os.Getenv("XLOG_AUTH_COOKIE_NAME"); v != "" {
+		cfg.AuthCookieName = v
+	}
+	if d, ok := durationFromEnv("XLOG_AUTH_COOKIE_TTL"); ok {
+		cfg.AuthCookieTTL = d
+	}
+	if b, ok := boolFromEnv("XLOG_COOKIE_SECURE"); ok {
+		cfg.CookieSecure = b
 	}
 }
 
@@ -245,9 +335,93 @@ func bytesFromEnv(key string) (int64, bool) {
 	return v, true
 }
 
+func boolFromEnv(key string) (bool, bool) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return false, false
+	}
+	b, err := strconv.ParseBool(value)
+	if err != nil {
+		log.Printf("环境变量 %s 解析失败 (%v), 忽略", key, err)
+		return false, false
+	}
+	return b, true
+}
+
+var rng = rand.New(rand.NewSource(time.Now().UnixNano()))
+
+func generatePassword(length int) string {
+	const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	if length <= 0 {
+		length = 16
+	}
+	b := make([]byte, length)
+	for i := range b {
+		b[i] = letters[rng.Intn(len(letters))]
+	}
+	return string(b)
+}
+
+func persistConfig(cfg *config) {
+	candidates := []string{}
+	seen := make(map[string]struct{})
+	if cfg.ConfigPath != "" {
+		candidates = append(candidates, cfg.ConfigPath)
+		seen[cfg.ConfigPath] = struct{}{}
+	}
+	if cfg.PrimaryConfigPath != "" {
+		if _, ok := seen[cfg.PrimaryConfigPath]; !ok {
+			candidates = append(candidates, cfg.PrimaryConfigPath)
+			seen[cfg.PrimaryConfigPath] = struct{}{}
+		}
+	}
+	var successPath string
+	for _, path := range candidates {
+		if path == "" {
+			continue
+		}
+		if err := saveConfigToPath(path, *cfg); err == nil {
+			if successPath == "" {
+				successPath = path
+			}
+		} else if !isPermissionError(err) {
+			log.Printf("保存配置文件失败 (%s): %v", path, err)
+		} else {
+			log.Printf("配置路径不可写 (%s): %v", path, err)
+		}
+	}
+	if successPath != "" {
+		cfg.ConfigPath = successPath
+		return
+	}
+	if cfg.PrimaryConfigPath != defaultConfigPath && cfg.PrimaryConfigPath != "" {
+		return
+	}
+	for _, path := range fallbackConfigPaths {
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		err := saveConfigToPath(path, *cfg)
+		if err == nil {
+			cfg.ConfigPath = path
+			log.Printf("配置已保存到备用路径: %s", path)
+			return
+		}
+		log.Printf("保存备用配置文件失败 (%s): %v", path, err)
+	}
+}
+
 func saveConfig(cfg config) error {
 	if cfg.ConfigPath == "" {
 		return nil
+	}
+	return saveConfigToPath(cfg.ConfigPath, cfg)
+}
+
+func saveConfigToPath(path string, cfg config) error {
+	if path == "" {
+		return fmt.Errorf("config path empty")
 	}
 	persist := persistedConfig{
 		HTTPAddr:        cfg.HTTPAddr,
@@ -257,19 +431,33 @@ func saveConfig(cfg config) error {
 		CleanupInterval: durationToString(cfg.CleanupInterval),
 		Retention:       durationToString(cfg.Retention),
 		MaxStorageBytes: strconv.FormatInt(cfg.MaxStorageBytes, 10),
+		ViewPassword:    cfg.ViewPassword,
+		AuthCookieName:  cfg.AuthCookieName,
+		AuthCookieTTL:   durationToString(cfg.AuthCookieTTL),
+		CookieSecure:    cfg.CookieSecure,
 	}
 	data, err := json.MarshalIndent(persist, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(cfg.ConfigPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	tmpPath := cfg.ConfigPath + ".tmp"
+	tmpPath := path + ".tmp"
 	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
 		return err
 	}
-	return os.Rename(tmpPath, cfg.ConfigPath)
+	return os.Rename(tmpPath, path)
+}
+
+func isPermissionError(err error) bool {
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		if pathErr.Err == syscall.EACCES || pathErr.Err == syscall.EROFS || pathErr.Err == syscall.EPERM {
+			return true
+		}
+	}
+	return false
 }
 
 func durationToString(d time.Duration) string {
