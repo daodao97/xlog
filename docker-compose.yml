@@ -11,9 +11,9 @@ services:
     image: xlog:latest
     restart: unless-stopped
     ports:
-      - "8888:8080"
+      - "8888:8888"
     environment:
-      - XLOG_HTTP_ADDR=0.0.0.0:8080
+      - XLOG_HTTP_ADDR=0.0.0.0:8888
       - XLOG_DUCKDB_PATH=/data/logs.duckdb
       - XLOG_LOG_TAIL=200
       - XLOG_LOG_SINCE=15m
