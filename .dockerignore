@@ -1,0 +1,9 @@
+.git
+data
+bin
+*.db
+*.log
+.gocache
+.gomod
+node_modules
+tmp

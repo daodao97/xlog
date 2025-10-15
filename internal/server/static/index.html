@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>xlog 日志搜索</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 0;
+      background: #0f172a;
+      color: #f8fafc;
+    }
+    header {
+      padding: 16px 24px;
+      background: #1e293b;
+      border-bottom: 1px solid #334155;
+    }
+    main {
+      padding: 24px;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    h1 {
+      margin: 0;
+      font-size: 22px;
+    }
+    form {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px;
+      margin-bottom: 16px;
+      background: #1e293b;
+      padding: 16px;
+      border-radius: 8px;
+      border: 1px solid #334155;
+    }
+    label {
+      display: flex;
+      flex-direction: column;
+      font-size: 13px;
+      gap: 6px;
+      color: #cbd5f5;
+    }
+    input, select, button {
+      padding: 8px;
+      border-radius: 6px;
+      border: 1px solid #475569;
+      background: #0f172a;
+      color: #f8fafc;
+    }
+    button {
+      cursor: pointer;
+      background: #2563eb;
+      border: none;
+    }
+    button:hover {
+      background: #1d4ed8;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #111827;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    th, td {
+      padding: 6px 10px;
+      border-bottom: 1px solid #1f2937;
+      vertical-align: top;
+      font-size: 13px;
+    }
+    th {
+      background: #1e293b;
+      text-align: left;
+      font-weight: 600;
+      color: #cbd5f5;
+    }
+    tbody tr:nth-child(even) {
+      background: #131c32;
+    }
+    .timestamp {
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+    .message {
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: "JetBrains Mono", "SFMono-Regular", monospace;
+      font-size: 12px;
+    }
+    .message .json-block {
+      background: rgba(15, 23, 42, 0.9);
+      border: 1px solid #1e293b;
+      border-radius: 6px;
+      padding: 8px;
+      overflow-x: auto;
+      max-height: 320px;
+    }
+    .message .json-block pre {
+      margin: 0;
+      white-space: pre;
+      word-break: normal;
+    }
+    .message .json-block details {
+      cursor: pointer;
+    }
+    .json-summary {
+      font-size: 12px;
+      color: #94a3b8;
+      font-family: "JetBrains Mono", "SFMono-Regular", monospace;
+    }
+    .level-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      background: #1f2937;
+      color: #e2e8f0;
+    }
+    .level-info {
+      background: rgba(37, 99, 235, 0.15);
+      color: #60a5fa;
+    }
+    .level-warn {
+      background: rgba(250, 204, 21, 0.18);
+      color: #facc15;
+    }
+    .level-error {
+      background: rgba(248, 113, 113, 0.18);
+      color: #f87171;
+    }
+    .level-debug {
+      background: rgba(148, 163, 184, 0.24);
+      color: #94a3b8;
+    }
+    .level-trace {
+      background: rgba(165, 180, 252, 0.18);
+      color: #a5b4fc;
+    }
+    .level-fatal, .level-panic {
+      background: rgba(220, 38, 38, 0.24);
+      color: #f87171;
+    }
+    tbody tr.level-info .message { color: #bfdbfe; }
+    tbody tr.level-debug .message { color: #cbd5f5; }
+    tbody tr.level-trace .message { color: #e0e7ff; }
+    tbody tr.level-warn .message { color: #fef08a; }
+    tbody tr.level-error .message,
+    tbody tr.level-fatal .message,
+    tbody tr.level-panic .message { color: #fecaca; }
+    tbody tr.level-unknown .level-badge {
+      background: #1f2937;
+      color: #cbd5f5;
+    }
+    .container-cell {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .container-id {
+      font-size: 12px;
+      color: #94a3b8;
+      font-family: "JetBrains Mono", "SFMono-Regular", monospace;
+    }
+    .input-with-quick {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .quick-select {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .quick-select button {
+      background: #1e293b;
+      border: 1px solid #334155;
+      padding: 4px 10px;
+      font-size: 12px;
+      color: #e2e8f0;
+    }
+    .quick-select button:hover {
+      background: #2563eb;
+      color: #fff;
+    }
+    .totals {
+      margin-bottom: 12px;
+      font-size: 13px;
+      color: #94a3b8;
+    }
+    .pagination {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-top: 12px;
+      color: #cbd5f5;
+    }
+    .pagination.hidden {
+      display: none;
+    }
+    .pagination button {
+      padding: 6px 12px;
+      border-radius: 6px;
+      border: 1px solid #334155;
+      background: #1e293b;
+      color: #e2e8f0;
+      font-size: 13px;
+    }
+    .pagination button:hover:not(:disabled) {
+      background: #2563eb;
+      color: #fff;
+    }
+    .pagination button:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    #status {
+      margin-bottom: 12px;
+      font-size: 13px;
+      color: #cbd5f5;
+    }
+    .controls {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>xlog 日志搜索</h1>
+  </header>
+  <main>
+    <form id="query-form">
+      <label>
+        容器
+        <select id="container-select">
+          <option value="">全部容器</option>
+        </select>
+      </label>
+      <label>
+        关键字
+        <input type="text" id="search-input" placeholder="支持模糊匹配" />
+      </label>
+      <label>
+        限制条数
+        <input type="number" id="limit-input" min="1" max="1000" value="200" />
+      </label>
+      <label>
+        流类型
+        <select id="stream-select">
+          <option value="">全部</option>
+          <option value="stdout">stdout</option>
+          <option value="stderr">stderr</option>
+        </select>
+      </label>
+      <label>
+        日志等级
+        <select id="level-select">
+          <option value="">全部</option>
+          <option value="trace">TRACE</option>
+          <option value="debug">DEBUG</option>
+          <option value="info">INFO</option>
+          <option value="warn">WARN</option>
+          <option value="error">ERROR</option>
+          <option value="fatal">FATAL</option>
+          <option value="panic">PANIC</option>
+        </select>
+      </label>
+      <label>
+        起始时间/范围
+        <div class="input-with-quick">
+          <input type="text" id="since-input" placeholder="如 15m 或 2024-05-01T12:00:00Z" />
+          <div class="quick-select" data-target="since-input">
+            <button type="button" data-value="5m">5m</button>
+            <button type="button" data-value="10m">10m</button>
+            <button type="button" data-value="30m">30m</button>
+            <button type="button" data-value="1h">1h</button>
+            <button type="button" data-value="6h">6h</button>
+          </div>
+        </div>
+      </label>
+      <label>
+        截止时间
+        <div class="input-with-quick">
+          <input type="text" id="until-input" placeholder="可选，RFC3339 或时长" />
+          <div class="quick-select" data-target="until-input">
+            <button type="button" data-value="now">现在</button>
+            <button type="button" data-value="">清除</button>
+          </div>
+        </div>
+      </label>
+      <label style="align-self: end;">
+        &nbsp;
+        <div class="controls">
+          <button type="submit">查询</button>
+          <button type="button" id="refresh-btn">刷新容器</button>
+        </div>
+      </label>
+    </form>
+    <div id="status">等待查询…</div>
+    <div id="totals" class="totals">总计: --</div>
+    <table>
+      <thead>
+        <tr>
+          <th>时间</th>
+          <th>容器</th>
+          <th>等级</th>
+          <th>流</th>
+          <th>内容</th>
+        </tr>
+      </thead>
+      <tbody id="log-table-body">
+      </tbody>
+    </table>
+    <div id="pagination" class="pagination hidden">
+      <button type="button" id="prev-page">上一页</button>
+      <span id="page-info">第 1 / 1 页</span>
+      <button type="button" id="next-page">下一页</button>
+    </div>
+  </main>
+  <script>
+    let currentParams = {};
+    let currentPage = 1;
+    let currentLimit = 200;
+    let totalRecords = 0;
+
+    async function fetchContainers(selected) {
+      try {
+        const res = await fetch('/api/containers');
+        const data = await res.json();
+        const select = document.getElementById('container-select');
+        const current = select.value;
+        select.innerHTML = '<option value="">全部容器</option>';
+        data.forEach(name => {
+          const option = document.createElement('option');
+          option.value = name;
+          option.textContent = name;
+          select.appendChild(option);
+        });
+        const target = selected ?? current;
+        if (target) {
+          const exists = Array.from(select.options).some(opt => opt.value === target);
+          if (!exists) {
+            const option = document.createElement('option');
+            option.value = target;
+            option.textContent = target + ' (无日志)';
+            select.appendChild(option);
+          }
+          select.value = target;
+        }
+      } catch (err) {
+        setStatus('获取容器列表失败: ' + err.message);
+      }
+    }
+
+    function setStatus(text) {
+      const el = document.getElementById('status');
+      el.textContent = text;
+    }
+
+    function setTotals(count) {
+      const el = document.getElementById('totals');
+      el.textContent = `总计: ${count}`;
+    }
+
+    function updatePagination(total, page, limit, forceHide = false) {
+      const pagination = document.getElementById('pagination');
+      if (!pagination) {
+        return;
+      }
+      const pageInfo = document.getElementById('page-info');
+      const prevBtn = document.getElementById('prev-page');
+      const nextBtn = document.getElementById('next-page');
+
+      const totalPages = limit > 0 ? Math.max(1, Math.ceil(total / limit)) : 1;
+      const current = Math.min(Math.max(page, 1), totalPages);
+
+      if (forceHide || total <= limit || total <= 0) {
+        pagination.classList.add('hidden');
+      } else {
+        pagination.classList.remove('hidden');
+      }
+
+      if (pageInfo) {
+        pageInfo.textContent = total > 0 ? `第 ${current} / ${totalPages} 页` : '第 1 / 1 页';
+      }
+      if (prevBtn) {
+        prevBtn.disabled = current <= 1;
+      }
+      if (nextBtn) {
+        nextBtn.disabled = current >= totalPages;
+      }
+    }
+
+    function renderLogs(logs) {
+      if (!Array.isArray(logs)) {
+        logs = [];
+      }
+      const tbody = document.getElementById('log-table-body');
+      tbody.innerHTML = '';
+      logs.forEach(log => {
+        const row = document.createElement('tr');
+        const level = (log.level || '').toLowerCase();
+        if (level) {
+          row.classList.add(`level-${level}`);
+        } else {
+          row.classList.add('level-unknown');
+        }
+        const levelLabel = level ? level.toUpperCase() : 'N/A';
+        const levelClass = level ? `level-badge level-${level}` : 'level-badge';
+        const containerId = (log.containerId || '').substring(0, 12);
+        row.innerHTML = `
+          <td class="timestamp">${escapeHtml(formatTime(log.timestamp))}</td>
+          <td class="container-cell">
+            <span>${escapeHtml(log.containerName || '(unknown)')}</span>
+            <span class="container-id">${escapeHtml(containerId)}</span>
+          </td>
+          <td><span class="${levelClass}">${escapeHtml(levelLabel)}</span></td>
+          <td>${escapeHtml(log.stream)}</td>
+          <td class="message"></td>
+        `;
+        const messageCell = row.querySelector('.message');
+        renderMessageContent(messageCell, log.message);
+        tbody.appendChild(row);
+      });
+    }
+
+    function formatTime(value) {
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) {
+        return value;
+      }
+      return date.toLocaleString();
+    }
+
+    function escapeHtml(text) {
+      return String(text ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+
+    function renderMessageContent(cell, message) {
+      const raw = message ?? '';
+      const trimmed = raw.trim();
+      if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+        try {
+          const parsed = JSON.parse(trimmed);
+          const formatted = JSON.stringify(parsed, null, 2);
+          const details = document.createElement('details');
+          details.className = 'json-block';
+          details.open = true;
+          const summary = document.createElement('summary');
+          summary.className = 'json-summary';
+          const preview = trimmed.replace(/\s+/g, ' ').slice(0, 60);
+          summary.textContent = 'JSON ' + preview + (trimmed.length > 60 ? '…' : '');
+          const pre = document.createElement('pre');
+          pre.textContent = formatted;
+          details.appendChild(summary);
+          details.appendChild(pre);
+          cell.appendChild(details);
+          return;
+        } catch (err) {
+          // fall back to plain text
+        }
+      }
+      cell.textContent = raw;
+    }
+
+    async function fetchLogs(params) {
+      currentParams = { ...params };
+      const query = new URLSearchParams(currentParams);
+      setStatus('查询中…');
+      try {
+        const res = await fetch('/api/logs?' + query.toString());
+        if (!res.ok) {
+          throw new Error(await res.text());
+        }
+        const data = await res.json();
+        const items = Array.isArray(data.items) ? data.items : (Array.isArray(data) ? data : []);
+        const total = typeof data.total === 'number' ? data.total : items.length;
+        const page = Number(data.page || currentParams.page || 1);
+        const limitValue = Number(data.limit || currentParams.limit || currentLimit || 200);
+
+        renderLogs(items);
+
+        currentPage = page > 0 ? page : 1;
+        currentLimit = limitValue > 0 ? limitValue : 200;
+        totalRecords = total;
+
+        const totalPages = currentLimit > 0 ? Math.max(1, Math.ceil(totalRecords / currentLimit)) : 1;
+        setStatus(`第 ${currentPage} / ${totalPages} 页，当前 ${items.length} 条`);
+        setTotals(totalRecords);
+        updatePagination(totalRecords, currentPage, currentLimit);
+      } catch (err) {
+        setStatus('查询失败: ' + err.message);
+        setTotals('--');
+        updatePagination(0, 1, currentLimit, true);
+      }
+    }
+
+    function buildParamsFromForm() {
+      const params = {};
+      const container = document.getElementById('container-select').value.trim();
+      if (container) params.container = container;
+      const search = document.getElementById('search-input').value.trim();
+      if (search) params.search = search;
+      const limit = document.getElementById('limit-input').value.trim();
+      if (limit) params.limit = limit;
+      const stream = document.getElementById('stream-select').value;
+      if (stream) params.stream = stream;
+      const level = document.getElementById('level-select').value;
+      if (level) params.level = level;
+      const since = document.getElementById('since-input').value.trim();
+      if (since) params.since = since;
+      const until = document.getElementById('until-input').value.trim();
+      if (until) params.until = until;
+      return params;
+    }
+
+    function updateURL(params) {
+      const query = new URLSearchParams(params);
+      const url = new URL(window.location);
+      const queryString = query.toString();
+      url.search = queryString ? '?' + queryString : '';
+      window.history.replaceState(null, '', url);
+    }
+
+    document.getElementById('query-form').addEventListener('submit', (event) => {
+      event.preventDefault();
+      const params = buildParamsFromForm();
+      params.page = 1;
+      updateURL(params);
+      fetchLogs(params);
+    });
+
+    document.getElementById('refresh-btn').addEventListener('click', () => {
+      const current = document.getElementById('container-select').value;
+      fetchContainers(current);
+    });
+
+    document.getElementById('prev-page').addEventListener('click', () => changePage(-1));
+    document.getElementById('next-page').addEventListener('click', () => changePage(1));
+
+    document.querySelectorAll('.quick-select button').forEach(button => {
+      button.addEventListener('click', (event) => {
+        const targetId = event.currentTarget.parentElement.dataset.target;
+        const input = document.getElementById(targetId);
+        const value = event.currentTarget.dataset.value;
+        input.value = value;
+        input.dispatchEvent(new Event('input'));
+      });
+    });
+
+    function changePage(delta) {
+      const totalPages = currentLimit > 0 ? Math.max(1, Math.ceil(totalRecords / currentLimit)) : 1;
+      const nextPage = Math.min(Math.max(currentPage + delta, 1), totalPages);
+      if (nextPage === currentPage) {
+        return;
+      }
+      const params = { ...currentParams, page: nextPage };
+      updateURL(params);
+      fetchLogs(params);
+    }
+
+    const initialParams = Object.fromEntries(new URLSearchParams(window.location.search));
+    if (initialParams.search) {
+      document.getElementById('search-input').value = initialParams.search;
+    }
+    document.getElementById('limit-input').value = initialParams.limit || '200';
+    if (initialParams.stream) {
+      document.getElementById('stream-select').value = initialParams.stream;
+    }
+    if (initialParams.level) {
+      document.getElementById('level-select').value = initialParams.level;
+    }
+    if (initialParams.since) {
+      document.getElementById('since-input').value = initialParams.since;
+    }
+    if (initialParams.until) {
+      document.getElementById('until-input').value = initialParams.until;
+    }
+
+    fetchContainers(initialParams.container).then(() => {
+      if (initialParams.container) {
+        const select = document.getElementById('container-select');
+        select.value = initialParams.container;
+      }
+      if (Object.keys(initialParams).length > 0) {
+        fetchLogs(initialParams);
+      }
+      updatePagination(0, 1, currentLimit, true);
+    });
+  </script>
+</body>
+</html>
