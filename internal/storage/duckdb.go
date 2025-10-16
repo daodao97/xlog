@@ -335,7 +335,7 @@ func (s *DuckDBStore) ContainerStats(ctx context.Context) ([]ContainerStat, erro
 	var stats []ContainerStat
 	for rows.Next() {
 		var (
-			name sql.NullString
+			name  sql.NullString
 			count sql.NullInt64
 			bytes sql.NullInt64
 			first sql.NullTime

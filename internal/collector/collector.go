@@ -68,6 +68,7 @@ func (c *Collector) bootstrap(ctx context.Context) {
 	}
 	for _, container := range containers {
 		name := normalizeContainerName(container.Names)
+		name = preferredContainerName(container.Labels, name)
 		if name == "" {
 			name = container.ID[:12]
 		}
@@ -115,6 +116,7 @@ func (c *Collector) handleEvent(ctx context.Context, event events.Message) {
 		if name == "" {
 			name = event.ID[:12]
 		}
+		name = preferredContainerName(event.Actor.Attributes, name)
 		c.startStream(ctx, event.ID, name)
 	case "die", "stop", "pause", "destroy":
 		c.stopStream(event.ID)
@@ -196,13 +198,51 @@ func (c *Collector) streamContainer(ctx context.Context, containerID, containerN
 
 func normalizeContainerName(names []string) string {
 	for _, name := range names {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			continue
+		if simplified := simplifyInstanceName(name); simplified != "" {
+			return simplified
 		}
-		return strings.TrimPrefix(name, "/")
 	}
 	return ""
+}
+
+func preferredContainerName(labels map[string]string, fallback string) string {
+	candidates := []string{
+		labels["com.docker.swarm.service.name"],
+		labels["com.docker.compose.service"],
+	}
+	for _, candidate := range candidates {
+		if name := simplifyInstanceName(candidate); name != "" {
+			return name
+		}
+	}
+	return simplifyInstanceName(fallback)
+}
+
+func simplifyInstanceName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	name = strings.TrimPrefix(name, "/")
+	if strings.Count(name, ".") == 2 {
+		parts := strings.SplitN(name, ".", 3)
+		if len(parts) == 3 && isAllDigits(parts[1]) {
+			return parts[0]
+		}
+	}
+	return name
+}
+
+func isAllDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, ch := range value {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *Collector) isAllowed(name string) bool {
@@ -234,6 +274,7 @@ func (c *Collector) enforceAllowList(ctx context.Context) {
 	}
 	for _, container := range containers {
 		name := normalizeContainerName(container.Names)
+		name = preferredContainerName(container.Labels, name)
 		if name == "" {
 			name = container.ID[:12]
 		}
