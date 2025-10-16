@@ -161,18 +161,40 @@ func loadConfig() config {
 		log.Printf("读取配置文件失败: %v", err)
 	}
 
-	if applyEnvOverrides(&cfg) {
-		passwordProvided = true
-	}
-	cfg.ContainerAllowPatterns = normalizePatterns(cfg.ContainerAllowPatterns)
-	cfg.ViewPassword = strings.TrimSpace(cfg.ViewPassword)
-	if cfg.ViewPassword == "" && !passwordProvided {
-		cfg.ViewPassword = generatePassword(16)
-		log.Printf("生成随机访问密码: %s", cfg.ViewPassword)
-		if err := persistConfig(&cfg); err != nil {
-			log.Printf("保存配置文件失败: %v", err)
-		}
-	}
+    if applyEnvOverrides(&cfg) {
+        passwordProvided = true
+    }
+
+    cfg.ContainerAllowPatterns = normalizePatterns(cfg.ContainerAllowPatterns)
+
+    if cfg.ViewPassword == "" {
+        for _, path := range []string{cfg.ConfigPath, cfg.PrimaryConfigPath} {
+            if strings.TrimSpace(path) == "" {
+                continue
+            }
+            if fileCfg, err := readConfigFile(path); err == nil {
+                if v := strings.TrimSpace(fileCfg.ViewPassword); v != "" {
+                    cfg.ViewPassword = v
+                    passwordProvided = true
+                    break
+                }
+            }
+        }
+    }
+
+    cfg.ViewPassword = strings.TrimSpace(cfg.ViewPassword)
+
+    generated := false
+    if cfg.ViewPassword == "" && !passwordProvided {
+        cfg.ViewPassword = generatePassword(16)
+        generated = true
+    }
+
+    if err := persistConfig(&cfg); err != nil {
+        log.Printf("保存配置文件失败: %v", err)
+    } else if generated {
+        log.Printf("生成随机访问密码: %s", cfg.ViewPassword)
+    }
 
 	log.Printf("服务配置: addr=%s db=%s tail=%s since=%s clean=%s retention=%s max=%d path=%s auth=%t cookie=%s ttl=%s secure=%t allow=%d",
 		cfg.HTTPAddr,
