@@ -23,22 +23,29 @@ var indexPage []byte
 //go:embed static/verify.html
 var verifyPage []byte
 
+//go:embed static/manager.html
+var managerPage []byte
+
 // Server 提供查询接口与简单界面。
 type Server struct {
-	store        storage.Store
-	httpServer   *http.Server
-	authEnabled  bool
-	passwordHash string
-	cookieName   string
-	cookieTTL    time.Duration
-	cookieSecure bool
+	store               storage.Store
+	httpServer          *http.Server
+	authEnabled         bool
+	passwordHash        string
+	cookieName          string
+	cookieTTL           time.Duration
+	cookieSecure        bool
+	getAllowPatterns    func() []string
+	updateAllowPatterns func([]string) error
 }
 
 type Options struct {
-	Password     string
-	CookieName   string
-	CookieTTL    time.Duration
-	CookieSecure bool
+	Password            string
+	CookieName          string
+	CookieTTL           time.Duration
+	CookieSecure        bool
+	GetAllowPatterns    func() []string
+	UpdateAllowPatterns func([]string) error
 }
 
 // New 返回 Server 实例。
@@ -57,20 +64,29 @@ func New(addr string, store storage.Store, opts Options) *Server {
 		cookieTTL = 7 * 24 * time.Hour
 	}
 	s := &Server{
-		store:        store,
-		authEnabled:  authEnabled,
-		passwordHash: passwordHash,
-		cookieName:   cookieName,
-		cookieTTL:    cookieTTL,
-		cookieSecure: opts.CookieSecure,
+		store:               store,
+		authEnabled:         authEnabled,
+		passwordHash:        passwordHash,
+		cookieName:          cookieName,
+		cookieTTL:           cookieTTL,
+		cookieSecure:        opts.CookieSecure,
+		getAllowPatterns:    opts.GetAllowPatterns,
+		updateAllowPatterns: opts.UpdateAllowPatterns,
+	}
+	if s.getAllowPatterns == nil {
+		s.getAllowPatterns = func() []string { return nil }
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.Handle("/api/logs", s.authRequired(http.HandlerFunc(s.handleLogs)))
 	mux.Handle("/api/containers", s.authRequired(http.HandlerFunc(s.handleContainers)))
+	mux.Handle("/api/containers/stats", s.authRequired(http.HandlerFunc(s.handleContainerStats)))
+	mux.Handle("/api/containers/cleanup", s.authRequired(http.HandlerFunc(s.handleContainerCleanup)))
 	mux.Handle("/api/stats", s.authRequired(http.HandlerFunc(s.handleStats)))
 	mux.HandleFunc("/api/verify", s.handleVerify)
 	mux.HandleFunc("/verify", s.handleVerifyPage)
+	mux.HandleFunc("/manager", s.handleManager)
+	mux.Handle("/api/config", s.authRequired(http.HandlerFunc(s.handleConfig)))
 	mux.HandleFunc("/", s.handleIndex)
 
 	s.httpServer = &http.Server{
@@ -129,6 +145,94 @@ func (s *Server) handleVerifyPage(w http.ResponseWriter, r *http.Request) {
 	if _, err := w.Write(verifyPage); err != nil {
 		log.Printf("write verify page failed: %v", err)
 	}
+}
+
+func (s *Server) handleManager(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.authEnabled && !s.isAuthorized(r) {
+		http.Redirect(w, r, "/verify", http.StatusFound)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if _, err := w.Write(managerPage); err != nil {
+		log.Printf("write manager page failed: %v", err)
+	}
+}
+
+func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		patterns := s.getAllowPatterns()
+		if patterns == nil {
+			patterns = []string{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"allowPatterns": normalizePatternList(patterns)})
+	case http.MethodPost:
+		if s.updateAllowPatterns == nil {
+			http.Error(w, "config update disabled", http.StatusForbidden)
+			return
+		}
+		var payload struct {
+			AllowPatterns []string `json:"allowPatterns"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			http.Error(w, "invalid payload", http.StatusBadRequest)
+			return
+		}
+		patterns := normalizePatternList(payload.AllowPatterns)
+		if err := s.updateAllowPatterns(patterns); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"allowPatterns": patterns})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleContainerStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	stats, err := s.store.ContainerStats(r.Context())
+	if err != nil {
+		log.Printf("container stats query failed: %v", err)
+		http.Error(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
+}
+
+func (s *Server) handleContainerCleanup(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var payload struct {
+		ContainerName *string `json:"containerName"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "invalid payload", http.StatusBadRequest)
+		return
+	}
+	if payload.ContainerName == nil {
+		http.Error(w, "containerName required", http.StatusBadRequest)
+		return
+	}
+	name := strings.TrimSpace(*payload.ContainerName)
+	deleted, err := s.store.DeleteContainerLogs(r.Context(), name)
+	if err != nil {
+		log.Printf("cleanup container %s failed: %v", name, err)
+		http.Error(w, "cleanup failed", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"deleted": deleted,
+	})
 }
 
 func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
@@ -327,6 +431,23 @@ func parseTimeInput(value string) (time.Time, error) {
 		return t.UTC(), nil
 	}
 	return time.Time{}, fmt.Errorf("invalid time format")
+}
+
+func normalizePatternList(patterns []string) []string {
+	seen := make(map[string]struct{})
+	result := make([]string, 0, len(patterns))
+	for _, pattern := range patterns {
+		p := strings.TrimSpace(pattern)
+		if p == "" {
+			continue
+		}
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		result = append(result, p)
+	}
+	return result
 }
 
 func hashPassword(password string) string {

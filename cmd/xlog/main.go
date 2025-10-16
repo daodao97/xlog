@@ -11,8 +11,10 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -24,19 +26,20 @@ import (
 )
 
 type config struct {
-	HTTPAddr          string
-	DBPath            string
-	Tail              string
-	Since             time.Duration
-	CleanupInterval   time.Duration
-	Retention         time.Duration
-	MaxStorageBytes   int64
-	ConfigPath        string
-	ViewPassword      string
-	AuthCookieName    string
-	AuthCookieTTL     time.Duration
-	CookieSecure      bool
-	PrimaryConfigPath string `json:"-"`
+	HTTPAddr               string
+	DBPath                 string
+	Tail                   string
+	Since                  time.Duration
+	CleanupInterval        time.Duration
+	Retention              time.Duration
+	MaxStorageBytes        int64
+	ConfigPath             string
+	ViewPassword           string
+	AuthCookieName         string
+	AuthCookieTTL          time.Duration
+	CookieSecure           bool
+	PrimaryConfigPath      string `json:"-"`
+	ContainerAllowPatterns []string
 }
 
 const defaultConfigPath = "/data/app.json"
@@ -45,6 +48,11 @@ var fallbackConfigPaths = []string{"./data/app.json", "./app.json"}
 
 func main() {
 	cfg := loadConfig()
+	compiledPatterns, err := compileAllowPatterns(cfg.ContainerAllowPatterns)
+	if err != nil {
+		log.Fatalf("容器白名单配置错误: %v", err)
+	}
+	cfgManager := newConfigManager(&cfg)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -71,15 +79,35 @@ func main() {
 	collectorOptions := collector.Options{
 		Tail:          cfg.Tail,
 		SinceDuration: cfg.Since,
+		AllowPatterns: compiledPatterns,
 	}
+	collectorInstance := collector.New(dockerCli, store, collectorOptions)
 	log.Printf("日志采集启动: tail=%q since=%s", collectorOptions.Tail, collectorOptions.SinceDuration)
-	go collector.New(dockerCli, store, collectorOptions).Run(ctx)
+	go collectorInstance.Run(ctx)
+
+	updatePatterns := func(patterns []string) error {
+		patterns = normalizePatterns(patterns)
+		compiled, err := compileAllowPatterns(patterns)
+		if err != nil {
+			return err
+		}
+		if err := cfgManager.SetAllowPatterns(patterns); err != nil {
+			return err
+		}
+		updateCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		collectorInstance.SetAllowPatterns(updateCtx, compiled)
+		log.Printf("更新容器白名单: %d 条", len(patterns))
+		return nil
+	}
 
 	httpServer := server.New(cfg.HTTPAddr, store, server.Options{
-		Password:     cfg.ViewPassword,
-		CookieName:   cfg.AuthCookieName,
-		CookieTTL:    cfg.AuthCookieTTL,
-		CookieSecure: cfg.CookieSecure,
+		Password:            cfg.ViewPassword,
+		CookieName:          cfg.AuthCookieName,
+		CookieTTL:           cfg.AuthCookieTTL,
+		CookieSecure:        cfg.CookieSecure,
+		GetAllowPatterns:    cfgManager.GetAllowPatterns,
+		UpdateAllowPatterns: updatePatterns,
 	})
 	go func() {
 		log.Printf("HTTP 服务监听 %s", cfg.HTTPAddr)
@@ -127,14 +155,17 @@ func loadConfig() config {
 	}
 
 	applyEnvOverrides(&cfg)
+	cfg.ContainerAllowPatterns = normalizePatterns(cfg.ContainerAllowPatterns)
 	cfg.ViewPassword = strings.TrimSpace(cfg.ViewPassword)
 	if cfg.ViewPassword == "" {
 		cfg.ViewPassword = generatePassword(16)
 		log.Printf("生成随机访问密码: %s", cfg.ViewPassword)
 	}
-	persistConfig(&cfg)
+	if err := persistConfig(&cfg); err != nil {
+		log.Printf("保存配置文件失败: %v", err)
+	}
 
-	log.Printf("服务配置: addr=%s db=%s tail=%s since=%s clean=%s retention=%s max=%d path=%s auth=%t cookie=%s ttl=%s secure=%t",
+	log.Printf("服务配置: addr=%s db=%s tail=%s since=%s clean=%s retention=%s max=%d path=%s auth=%t cookie=%s ttl=%s secure=%t allow=%d",
 		cfg.HTTPAddr,
 		cfg.DBPath,
 		cfg.Tail,
@@ -147,6 +178,7 @@ func loadConfig() config {
 		cfg.AuthCookieName,
 		durationToString(cfg.AuthCookieTTL),
 		cfg.CookieSecure,
+		len(cfg.ContainerAllowPatterns),
 	)
 
 	return cfg
@@ -160,31 +192,33 @@ func getEnv(key, def string) string {
 }
 
 type persistedConfig struct {
-	HTTPAddr        string `json:"httpAddr"`
-	DBPath          string `json:"dbPath"`
-	Tail            string `json:"tail"`
-	Since           string `json:"since"`
-	CleanupInterval string `json:"cleanupInterval"`
-	Retention       string `json:"retention"`
-	MaxStorageBytes string `json:"maxStorageBytes"`
-	ViewPassword    string `json:"viewPassword"`
-	AuthCookieName  string `json:"authCookieName"`
-	AuthCookieTTL   string `json:"authCookieTtl"`
-	CookieSecure    bool   `json:"cookieSecure"`
+	HTTPAddr               string   `json:"httpAddr"`
+	DBPath                 string   `json:"dbPath"`
+	Tail                   string   `json:"tail"`
+	Since                  string   `json:"since"`
+	CleanupInterval        string   `json:"cleanupInterval"`
+	Retention              string   `json:"retention"`
+	MaxStorageBytes        string   `json:"maxStorageBytes"`
+	ViewPassword           string   `json:"viewPassword"`
+	AuthCookieName         string   `json:"authCookieName"`
+	AuthCookieTTL          string   `json:"authCookieTtl"`
+	CookieSecure           bool     `json:"cookieSecure"`
+	ContainerAllowPatterns []string `json:"containerAllowPatterns"`
 }
 
 type fileConfig struct {
-	HTTPAddr        string `json:"httpAddr"`
-	DBPath          string `json:"dbPath"`
-	Tail            string `json:"tail"`
-	Since           string `json:"since"`
-	CleanupInterval string `json:"cleanupInterval"`
-	Retention       string `json:"retention"`
-	MaxStorageBytes string `json:"maxStorageBytes"`
-	ViewPassword    string `json:"viewPassword"`
-	AuthCookieName  string `json:"authCookieName"`
-	AuthCookieTTL   string `json:"authCookieTtl"`
-	CookieSecure    *bool  `json:"cookieSecure"`
+	HTTPAddr               string   `json:"httpAddr"`
+	DBPath                 string   `json:"dbPath"`
+	Tail                   string   `json:"tail"`
+	Since                  string   `json:"since"`
+	CleanupInterval        string   `json:"cleanupInterval"`
+	Retention              string   `json:"retention"`
+	MaxStorageBytes        string   `json:"maxStorageBytes"`
+	ViewPassword           string   `json:"viewPassword"`
+	AuthCookieName         string   `json:"authCookieName"`
+	AuthCookieTTL          string   `json:"authCookieTtl"`
+	CookieSecure           *bool    `json:"cookieSecure"`
+	ContainerAllowPatterns []string `json:"containerAllowPatterns"`
 }
 
 func readConfigFile(path string) (fileConfig, error) {
@@ -271,6 +305,9 @@ func applyFileConfig(cfg *config, fc fileConfig) {
 	if fc.CookieSecure != nil {
 		cfg.CookieSecure = *fc.CookieSecure
 	}
+	if len(fc.ContainerAllowPatterns) > 0 {
+		cfg.ContainerAllowPatterns = append([]string(nil), fc.ContainerAllowPatterns...)
+	}
 }
 
 func applyEnvOverrides(cfg *config) {
@@ -306,6 +343,9 @@ func applyEnvOverrides(cfg *config) {
 	}
 	if b, ok := boolFromEnv("XLOG_COOKIE_SECURE"); ok {
 		cfg.CookieSecure = b
+	}
+	if patterns := os.Getenv("XLOG_CONTAINER_ALLOW_PATTERNS"); patterns != "" {
+		cfg.ContainerAllowPatterns = splitAndTrim(patterns)
 	}
 }
 
@@ -362,54 +402,59 @@ func generatePassword(length int) string {
 	return string(b)
 }
 
-func persistConfig(cfg *config) {
-	candidates := []string{}
+func persistConfig(cfg *config) error {
 	seen := make(map[string]struct{})
-	if cfg.ConfigPath != "" {
-		candidates = append(candidates, cfg.ConfigPath)
-		seen[cfg.ConfigPath] = struct{}{}
-	}
-	if cfg.PrimaryConfigPath != "" {
-		if _, ok := seen[cfg.PrimaryConfigPath]; !ok {
-			candidates = append(candidates, cfg.PrimaryConfigPath)
-			seen[cfg.PrimaryConfigPath] = struct{}{}
-		}
-	}
+	var attempts []string
 	var successPath string
-	for _, path := range candidates {
+
+	tryPath := func(path string) bool {
 		if path == "" {
-			continue
+			return false
 		}
-		if err := saveConfigToPath(path, *cfg); err == nil {
-			if successPath == "" {
-				successPath = path
-			}
-		} else if !isPermissionError(err) {
-			log.Printf("保存配置文件失败 (%s): %v", path, err)
-		} else {
-			log.Printf("配置路径不可写 (%s): %v", path, err)
-		}
-	}
-	if successPath != "" {
-		cfg.ConfigPath = successPath
-		return
-	}
-	if cfg.PrimaryConfigPath != defaultConfigPath && cfg.PrimaryConfigPath != "" {
-		return
-	}
-	for _, path := range fallbackConfigPaths {
 		if _, ok := seen[path]; ok {
-			continue
+			return false
 		}
 		seen[path] = struct{}{}
 		err := saveConfigToPath(path, *cfg)
 		if err == nil {
-			cfg.ConfigPath = path
-			log.Printf("配置已保存到备用路径: %s", path)
-			return
+			successPath = path
+			return true
 		}
-		log.Printf("保存备用配置文件失败 (%s): %v", path, err)
+		attempts = append(attempts, fmt.Sprintf("%s: %v", path, err))
+		return false
 	}
+
+	if tryPath(cfg.ConfigPath) {
+		cfg.ConfigPath = successPath
+		return nil
+	}
+	if tryPath(cfg.PrimaryConfigPath) {
+		cfg.ConfigPath = successPath
+		return nil
+	}
+
+	if successPath == "" {
+		for _, path := range fallbackConfigPaths {
+			if tryPath(path) {
+				cfg.ConfigPath = successPath
+				if cfg.PrimaryConfigPath != "" {
+					log.Printf("配置无法写入 %s，已保存到备用路径: %s", cfg.PrimaryConfigPath, successPath)
+				} else {
+					log.Printf("配置已保存到备用路径: %s", successPath)
+				}
+				return nil
+			}
+		}
+	}
+
+	if successPath != "" {
+		cfg.ConfigPath = successPath
+		return nil
+	}
+	if len(attempts) == 0 {
+		return fmt.Errorf("无法保存配置文件: 未提供可写路径")
+	}
+	return fmt.Errorf("无法保存配置文件 (%s)", strings.Join(attempts, "; "))
 }
 
 func saveConfig(cfg config) error {
@@ -424,23 +469,24 @@ func saveConfigToPath(path string, cfg config) error {
 		return fmt.Errorf("config path empty")
 	}
 	persist := persistedConfig{
-		HTTPAddr:        cfg.HTTPAddr,
-		DBPath:          cfg.DBPath,
-		Tail:            cfg.Tail,
-		Since:           durationToString(cfg.Since),
-		CleanupInterval: durationToString(cfg.CleanupInterval),
-		Retention:       durationToString(cfg.Retention),
-		MaxStorageBytes: strconv.FormatInt(cfg.MaxStorageBytes, 10),
-		ViewPassword:    cfg.ViewPassword,
-		AuthCookieName:  cfg.AuthCookieName,
-		AuthCookieTTL:   durationToString(cfg.AuthCookieTTL),
-		CookieSecure:    cfg.CookieSecure,
+		HTTPAddr:               cfg.HTTPAddr,
+		DBPath:                 cfg.DBPath,
+		Tail:                   cfg.Tail,
+		Since:                  durationToString(cfg.Since),
+		CleanupInterval:        durationToString(cfg.CleanupInterval),
+		Retention:              durationToString(cfg.Retention),
+		MaxStorageBytes:        strconv.FormatInt(cfg.MaxStorageBytes, 10),
+		ViewPassword:           cfg.ViewPassword,
+		AuthCookieName:         cfg.AuthCookieName,
+		AuthCookieTTL:          durationToString(cfg.AuthCookieTTL),
+		CookieSecure:           cfg.CookieSecure,
+		ContainerAllowPatterns: cfg.ContainerAllowPatterns,
 	}
 	data, err := json.MarshalIndent(persist, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := ensureConfigDir(path); err != nil {
 		return err
 	}
 	tmpPath := path + ".tmp"
@@ -448,6 +494,17 @@ func saveConfigToPath(path string, cfg config) error {
 		return err
 	}
 	return os.Rename(tmpPath, path)
+}
+
+func ensureConfigDir(path string) error {
+	dir := filepath.Dir(path)
+	if dir == "." || dir == "" {
+		return nil
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return nil
 }
 
 func isPermissionError(err error) bool {
@@ -458,6 +515,82 @@ func isPermissionError(err error) bool {
 		}
 	}
 	return false
+}
+
+type configManager struct {
+	mu  sync.RWMutex
+	cfg *config
+}
+
+func newConfigManager(cfg *config) *configManager {
+	return &configManager{cfg: cfg}
+}
+
+func (m *configManager) GetAllowPatterns() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return append([]string(nil), m.cfg.ContainerAllowPatterns...)
+}
+
+func (m *configManager) SetAllowPatterns(patterns []string) error {
+	patterns = normalizePatterns(patterns)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	old := append([]string(nil), m.cfg.ContainerAllowPatterns...)
+	m.cfg.ContainerAllowPatterns = append([]string(nil), patterns...)
+	if err := persistConfig(m.cfg); err != nil {
+		m.cfg.ContainerAllowPatterns = old
+		return err
+	}
+	return nil
+}
+
+func splitAndTrim(input string) []string {
+	if strings.TrimSpace(input) == "" {
+		return nil
+	}
+	fields := strings.FieldsFunc(input, func(r rune) bool {
+		switch r {
+		case '\n', '\r', ',', ';':
+			return true
+		default:
+			return false
+		}
+	})
+	return normalizePatterns(fields)
+}
+
+func normalizePatterns(patterns []string) []string {
+	seen := make(map[string]struct{})
+	result := make([]string, 0, len(patterns))
+	for _, pattern := range patterns {
+		p := strings.TrimSpace(pattern)
+		if p == "" {
+			continue
+		}
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		result = append(result, p)
+	}
+	return result
+}
+
+func compileAllowPatterns(patterns []string) ([]*regexp.Regexp, error) {
+	patterns = normalizePatterns(patterns)
+	if len(patterns) == 0 {
+		return nil, nil
+	}
+	compiled := make([]*regexp.Regexp, 0, len(patterns))
+	for _, pattern := range patterns {
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			return nil, fmt.Errorf("无效容器白名单正则 %q: %w", pattern, err)
+		}
+		compiled = append(compiled, re)
+	}
+	return compiled, nil
 }
 
 func durationToString(d time.Duration) string {

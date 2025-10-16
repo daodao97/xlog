@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,7 @@ import (
 type Options struct {
 	Tail          string
 	SinceDuration time.Duration
+	AllowPatterns []*regexp.Regexp
 }
 
 // Collector 持续监听 docker 日志并写入存储。
@@ -31,17 +33,21 @@ type Collector struct {
 	store   storage.Store
 	options Options
 
-	mu      sync.Mutex
-	streams map[string]context.CancelFunc
+	mu            sync.RWMutex
+	streams       map[string]context.CancelFunc
+	names         map[string]string
+	allowPatterns []*regexp.Regexp
 }
 
 // New 创建收集器。
 func New(cli *client.Client, store storage.Store, opts Options) *Collector {
 	return &Collector{
-		cli:     cli,
-		store:   store,
-		options: opts,
-		streams: make(map[string]context.CancelFunc),
+		cli:           cli,
+		store:         store,
+		options:       opts,
+		streams:       make(map[string]context.CancelFunc),
+		names:         make(map[string]string),
+		allowPatterns: append([]*regexp.Regexp(nil), opts.AllowPatterns...),
 	}
 }
 
@@ -116,6 +122,9 @@ func (c *Collector) handleEvent(ctx context.Context, event events.Message) {
 }
 
 func (c *Collector) startStream(ctx context.Context, containerID, containerName string) {
+	if !c.isAllowed(containerName) {
+		return
+	}
 	c.mu.Lock()
 	if _, exists := c.streams[containerID]; exists {
 		c.mu.Unlock()
@@ -123,6 +132,7 @@ func (c *Collector) startStream(ctx context.Context, containerID, containerName 
 	}
 	childCtx, cancel := context.WithCancel(ctx)
 	c.streams[containerID] = cancel
+	c.names[containerID] = containerName
 	c.mu.Unlock()
 
 	go func() {
@@ -137,6 +147,7 @@ func (c *Collector) stopStream(containerID string) {
 	if ok {
 		delete(c.streams, containerID)
 	}
+	delete(c.names, containerID)
 	c.mu.Unlock()
 	if ok {
 		cancel()
@@ -149,6 +160,7 @@ func (c *Collector) stopAll() {
 	for id := range c.streams {
 		ids = append(ids, id)
 	}
+	c.names = make(map[string]string)
 	c.mu.Unlock()
 	for _, id := range ids {
 		c.stopStream(id)
@@ -191,6 +203,55 @@ func normalizeContainerName(names []string) string {
 		return strings.TrimPrefix(name, "/")
 	}
 	return ""
+}
+
+func (c *Collector) isAllowed(name string) bool {
+	c.mu.RLock()
+	patterns := c.allowPatterns
+	c.mu.RUnlock()
+	if len(patterns) == 0 {
+		return true
+	}
+	for _, re := range patterns {
+		if re.MatchString(name) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Collector) SetAllowPatterns(ctx context.Context, patterns []*regexp.Regexp) {
+	c.mu.Lock()
+	c.allowPatterns = append([]*regexp.Regexp(nil), patterns...)
+	c.mu.Unlock()
+	c.enforceAllowList(ctx)
+}
+
+func (c *Collector) enforceAllowList(ctx context.Context) {
+	containers, err := c.cli.ContainerList(ctx, types.ContainerListOptions{All: true})
+	if err != nil && !errors.Is(err, context.Canceled) {
+		log.Printf("enforce allow list failed: %v", err)
+	}
+	for _, container := range containers {
+		name := normalizeContainerName(container.Names)
+		if name == "" {
+			name = container.ID[:12]
+		}
+		if c.isAllowed(name) {
+			c.startStream(ctx, container.ID, name)
+		}
+	}
+	c.mu.RLock()
+	toStop := make([]string, 0)
+	for id, name := range c.names {
+		if !c.isAllowed(name) {
+			toStop = append(toStop, id)
+		}
+	}
+	c.mu.RUnlock()
+	for _, id := range toStop {
+		c.stopStream(id)
+	}
 }
 
 type logWriter struct {

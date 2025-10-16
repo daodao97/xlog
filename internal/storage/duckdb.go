@@ -42,6 +42,14 @@ type LogResult struct {
 	Total   int64      `json:"total"`
 }
 
+type ContainerStat struct {
+	ContainerName string    `json:"containerName"`
+	LogCount      int64     `json:"logCount"`
+	MessageBytes  int64     `json:"messageBytes"`
+	FirstAt       time.Time `json:"firstTimestamp"`
+	LastAt        time.Time `json:"lastTimestamp"`
+}
+
 // Stats 汇总信息。
 type Stats struct {
 	ContainerCount int64 `json:"containers"`
@@ -58,6 +66,8 @@ type Store interface {
 	CleanupOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
 	CleanupExceedingSize(ctx context.Context, maxBytes int64) (int64, error)
 	Stats(ctx context.Context) (Stats, error)
+	ContainerStats(ctx context.Context) ([]ContainerStat, error)
+	DeleteContainerLogs(ctx context.Context, name string) (int64, error)
 	Close() error
 }
 
@@ -304,6 +314,66 @@ func (s *DuckDBStore) Stats(ctx context.Context) (Stats, error) {
 	}
 	result.SizeBytes = size
 	return result, nil
+}
+
+func (s *DuckDBStore) ContainerStats(ctx context.Context) ([]ContainerStat, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			container_name,
+			COUNT(*) AS log_count,
+			COALESCE(SUM(LENGTH(message)), 0) AS message_bytes,
+			MIN(timestamp) AS first_ts,
+			MAX(timestamp) AS last_ts
+		FROM logs
+		GROUP BY container_name
+		ORDER BY COALESCE(container_name, '')
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var stats []ContainerStat
+	for rows.Next() {
+		var (
+			name sql.NullString
+			count sql.NullInt64
+			bytes sql.NullInt64
+			first sql.NullTime
+			last  sql.NullTime
+		)
+		if err := rows.Scan(&name, &count, &bytes, &first, &last); err != nil {
+			return nil, err
+		}
+		stat := ContainerStat{
+			ContainerName: name.String,
+			LogCount:      count.Int64,
+			MessageBytes:  bytes.Int64,
+		}
+		if first.Valid {
+			stat.FirstAt = first.Time.UTC()
+		}
+		if last.Valid {
+			stat.LastAt = last.Time.UTC()
+		}
+		stats = append(stats, stat)
+	}
+	return stats, rows.Err()
+}
+
+func (s *DuckDBStore) DeleteContainerLogs(ctx context.Context, name string) (int64, error) {
+	name = strings.TrimSpace(name)
+	res, err := s.db.ExecContext(ctx, `DELETE FROM logs WHERE COALESCE(container_name, '') = ?`, name)
+	if err != nil {
+		return 0, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if affected > 0 {
+		_ = s.vacuum(ctx)
+	}
+	return affected, nil
 }
 
 func (s *DuckDBStore) vacuum(ctx context.Context) error {

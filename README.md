@@ -11,6 +11,7 @@
 - 提供 `/api/logs`、`/api/containers` REST 接口，方便二次集成。
 - 提供全局统计与自动清理策略，支持按时间或容量定期清理历史日志。
 - 支持配置访问密码，未授权访问将跳转验证并写入安全 Cookie。
+- 内置 `/manager` 页面，可在线管理容器白名单（支持正则表达式过滤）。
 
 ## 快速开始
 
@@ -71,6 +72,7 @@ docker compose up -d --build
 | `XLOG_AUTH_COOKIE_NAME` | `xlog_auth` | 登录状态 Cookie 名称 |
 | `XLOG_AUTH_COOKIE_TTL` | `168h` | 登录有效期（Duration 格式），默认 7 天 |
 | `XLOG_COOKIE_SECURE` | `false` | 是否仅通过 HTTPS 发送登录 Cookie |
+| `XLOG_CONTAINER_ALLOW_PATTERNS` | 空 | 容器白名单正则表达式（逗号或换行分隔），为空表示采集全部容器 |
 
 ## 全局配置文件
 
@@ -88,7 +90,8 @@ docker compose up -d --build
   "viewPassword": "your-password",
   "authCookieName": "xlog_auth",
   "authCookieTtl": "168h0m0s",
-  "cookieSecure": false
+  "cookieSecure": false,
+  "containerAllowPatterns": ["^prod-.*", "^critical-service$"]
 }
 ```
 
@@ -100,6 +103,12 @@ docker compose up -d --build
 - 验证成功后，服务会写入一个带过期时间的 HttpOnly Cookie（默认 7 天有效），后续访问自动携带。
 - 若需要强制用户使用 HTTPS，可将 `XLOG_COOKIE_SECURE=true`，Cookie 将仅在安全连接中发送。
 - 清空密码或删除配置文件字段即可关闭认证。
+
+## 容器白名单
+
+- 通过 `/manager` 页面可以在线配置允许采集日志的容器名称列表，支持 Go 正则表达式，每行一条（示例：`^prod-.*`）。
+- 同样可通过 `XLOG_CONTAINER_ALLOW_PATTERNS`（逗号或换行分隔）或配置文件的 `containerAllowPatterns` 字段进行配置。
+- 白名单为空表示采集所有容器；更新后会立即生效，未匹配的容器会停止采集。
 
 ## API 说明
 
@@ -124,11 +133,19 @@ docker compose up -d --build
     ```
 - `GET /api/containers`
   - 返回已存储日志的容器名称列表
+- `GET /api/containers/stats`
+  - 返回每个容器的日志条数、占用空间及时间范围
+- `POST /api/containers/cleanup`
+  - 请求体：`{ "containerName": "..." }`（空字符串表示未命名容器）；清理指定容器的全部日志
 - `GET /api/stats`
   - 返回当前容器数量、日志总数及 DuckDB 文件大小，用于前端展示
 - `POST /api/verify`
   - 请求体：`{ "password": "..." }`
   - 密码正确时返回 200 并写入登录 Cookie，否则返回 401
+- `GET /api/config`
+  - 返回当前容器白名单配置
+- `POST /api/config`
+  - 请求体：`{ "allowPatterns": ["regex", ...] }`，成功后立即生效
 - `GET /healthz`
   - 健康检查
 

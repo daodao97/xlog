@@ -244,6 +244,40 @@
       gap: 12px;
       margin-top: 8px;
     }
+    .header-info {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      font-size: 13px;
+      color: #cbd5f5;
+    }
+    .header-stats {
+      display: flex;
+      gap: 16px;
+      align-items: center;
+    }
+    .header-stats span {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .header-stats span strong {
+      color: #f8fafc;
+    }
+    .header-links {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      color: #cbd5f5;
+    }
+    .header-link {
+      color: #93c5fd;
+      text-decoration: none;
+      font-size: 13px;
+    }
+    .header-link:hover {
+      text-decoration: underline;
+    }
     .pagination {
       display: flex;
       align-items: center;
@@ -288,25 +322,6 @@
     .secondary-button:hover {
       background: #2563eb;
       color: #fff;
-    }
-    .header-info {
-      display: flex;
-      flex-direction: row;
-      align-items: center;
-      gap: 16px;
-      text-align: right;
-      font-size: 13px;
-      color: #cbd5f5;
-      flex-wrap: wrap;
-      justify-content: flex-end;
-    }
-    .header-info span {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-    }
-    .header-info span strong {
-      color: #f8fafc;
     }
     .container-combo {
       position: relative;
@@ -379,9 +394,14 @@
   <header>
     <h1>xlog 日志搜索</h1>
     <div class="header-info">
-      <span>容器: <strong id="stats-containers">--</strong></span>
-      <span>日志: <strong id="stats-logs">--</strong></span>
-      <span>容量: <strong id="stats-size">--</strong></span>
+      <div class="header-links">
+        <a href="/manager" class="header-link">配置管理</a>
+      </div>
+      <div class="header-stats">
+        <span>容器: <strong id="stats-containers">--</strong></span>
+        <span>日志: <strong id="stats-logs">--</strong></span>
+        <span>容量: <strong id="stats-size">--</strong></span>
+      </div>
     </div>
   </header>
   <main>
