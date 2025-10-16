@@ -88,23 +88,52 @@ func NewDuckDB(path string) (*DuckDBStore, error) {
 		return nil, err
 	}
 
-	// 尝试打开数据库
-	db, err := openDuckDB(absPath)
+	// 尝试打开数据库,最多重试一次
+	db, err := tryOpenDuckDB(absPath)
 	if err != nil {
-		// 如果打开失败,尝试恢复
-		log.Printf("数据库打开失败 (%v), 尝试自动恢复...", err)
+		return nil, err
+	}
+
+	return &DuckDBStore{db: db, path: absPath}, nil
+}
+
+// tryOpenDuckDB 尝试打开数据库,失败时自动恢复并重试
+func tryOpenDuckDB(absPath string) (*sql.DB, error) {
+	// 第一次尝试打开
+	db, err := openDuckDBWithRecovery(absPath)
+	if err != nil {
+		// 如果打开失败,检查是否是损坏错误
+		log.Printf("数据库打开失败: %v", err)
+
+		// 尝试恢复损坏的数据库
+		log.Printf("检测到数据库可能已损坏,尝试自动恢复...")
 		if recoverErr := recoverCorruptedDB(absPath); recoverErr != nil {
 			return nil, fmt.Errorf("数据库恢复失败: %w (原始错误: %v)", recoverErr, err)
 		}
+
 		// 恢复后重新尝试打开
-		db, err = openDuckDB(absPath)
+		log.Printf("正在使用新数据库重新启动...")
+		db, err = openDuckDBWithRecovery(absPath)
 		if err != nil {
 			return nil, fmt.Errorf("恢复后仍无法打开数据库: %w", err)
 		}
 		log.Printf("数据库已成功恢复并重新创建")
 	}
 
-	return &DuckDBStore{db: db, path: absPath}, nil
+	return db, nil
+}
+
+// openDuckDBWithRecovery 使用 recover 捕获 panic
+func openDuckDBWithRecovery(absPath string) (db *sql.DB, err error) {
+	// 捕获可能的 panic (DuckDB 的一些错误会导致 panic)
+	defer func() {
+		if r := recover(); r != nil {
+			db = nil
+			err = fmt.Errorf("数据库打开时发生严重错误: %v", r)
+		}
+	}()
+
+	return openDuckDB(absPath)
 }
 
 // openDuckDB 打开 DuckDB 数据库连接
@@ -426,18 +455,60 @@ func (s *DuckDBStore) ContainerStats(ctx context.Context) ([]ContainerStat, erro
 
 func (s *DuckDBStore) DeleteContainerLogs(ctx context.Context, name string) (int64, error) {
 	name = strings.TrimSpace(name)
-	res, err := s.db.ExecContext(ctx, `DELETE FROM logs WHERE COALESCE(container_name, '') = ?`, name)
-	if err != nil {
-		return 0, err
+
+	// 分批删除,避免大事务导致内存压力过大
+	const batchSize = 5000
+	var totalDeleted int64
+
+	for {
+		// 检查 context 是否已取消
+		if err := ctx.Err(); err != nil {
+			log.Printf("删除容器日志被取消: %v (已删除 %d 条)", err, totalDeleted)
+			return totalDeleted, err
+		}
+
+		// 每批删除指定数量的记录
+		res, err := s.db.ExecContext(ctx, `
+			DELETE FROM logs
+			WHERE id IN (
+				SELECT id FROM logs
+				WHERE COALESCE(container_name, '') = ?
+				LIMIT ?
+			)
+		`, name, batchSize)
+
+		if err != nil {
+			// 如果删除过程中出错,返回已删除的数量和错误
+			log.Printf("删除容器日志出错: %v (已删除 %d 条)", err, totalDeleted)
+			return totalDeleted, err
+		}
+
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return totalDeleted, err
+		}
+
+		totalDeleted += affected
+
+		// 如果本批删除的数量少于批次大小,说明已经删除完毕
+		if affected < batchSize {
+			break
+		}
+
+		// 每删除一批后执行 checkpoint,释放空间并避免 WAL 文件过大
+		if totalDeleted%20000 == 0 {
+			s.ensureCheckpoint()
+			log.Printf("删除容器 %q 日志进度: 已删除 %d 条", name, totalDeleted)
+		}
 	}
-	affected, err := res.RowsAffected()
-	if err != nil {
-		return 0, err
-	}
-	if affected > 0 {
+
+	// 最终执行 checkpoint
+	if totalDeleted > 0 {
 		s.ensureCheckpoint()
+		log.Printf("删除容器 %q 日志完成: 共删除 %d 条", name, totalDeleted)
 	}
-	return affected, nil
+
+	return totalDeleted, nil
 }
 
 func (s *DuckDBStore) ensureCheckpoint() {

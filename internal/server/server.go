@@ -93,7 +93,7 @@ func New(addr string, store storage.Store, opts Options) *Server {
 		Addr:         addr,
 		Handler:      withLogging(mux),
 		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 60 * time.Second,
+		WriteTimeout: 6 * time.Minute, // 延长写超时,支持大数据量删除操作
 		IdleTimeout:  120 * time.Second,
 	}
 	return s
@@ -224,10 +224,20 @@ func (s *Server) handleContainerCleanup(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	name := strings.TrimSpace(*payload.ContainerName)
-	deleted, err := s.store.DeleteContainerLogs(r.Context(), name)
+
+	// 为大数据量删除操作设置更长的超时时间 (5分钟)
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+
+	deleted, err := s.store.DeleteContainerLogs(ctx, name)
 	if err != nil {
-		log.Printf("cleanup container %s failed: %v", name, err)
-		http.Error(w, "cleanup failed", http.StatusInternalServerError)
+		if ctx.Err() == context.DeadlineExceeded {
+			log.Printf("cleanup container %s timeout (deleted: %d)", name, deleted)
+			http.Error(w, fmt.Sprintf("cleanup timeout, partially deleted: %d rows", deleted), http.StatusRequestTimeout)
+		} else {
+			log.Printf("cleanup container %s failed: %v (deleted: %d)", name, err, deleted)
+			http.Error(w, "cleanup failed", http.StatusInternalServerError)
+		}
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
