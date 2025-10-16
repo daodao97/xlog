@@ -87,13 +87,76 @@ func NewDuckDB(path string) (*DuckDBStore, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// 尝试打开数据库
+	db, err := openDuckDB(absPath)
+	if err != nil {
+		// 如果打开失败,尝试恢复
+		log.Printf("数据库打开失败 (%v), 尝试自动恢复...", err)
+		if recoverErr := recoverCorruptedDB(absPath); recoverErr != nil {
+			return nil, fmt.Errorf("数据库恢复失败: %w (原始错误: %v)", recoverErr, err)
+		}
+		// 恢复后重新尝试打开
+		db, err = openDuckDB(absPath)
+		if err != nil {
+			return nil, fmt.Errorf("恢复后仍无法打开数据库: %w", err)
+		}
+		log.Printf("数据库已成功恢复并重新创建")
+	}
+
+	return &DuckDBStore{db: db, path: absPath}, nil
+}
+
+// openDuckDB 打开 DuckDB 数据库连接
+func openDuckDB(absPath string) (*sql.DB, error) {
 	db, err := sql.Open("duckdb", fmt.Sprintf("%s?access_mode=read_write", absPath))
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	return &DuckDBStore{db: db, path: absPath}, nil
+
+	// 测试连接是否正常
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		db.Close()
+		return nil, err
+	}
+
+	return db, nil
+}
+
+// recoverCorruptedDB 恢复损坏的数据库文件
+func recoverCorruptedDB(absPath string) error {
+	// 检查文件是否存在
+	if _, err := os.Stat(absPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			// 文件不存在,无需恢复
+			return nil
+		}
+		return err
+	}
+
+	// 备份损坏的文件
+	backupPath := fmt.Sprintf("%s.corrupted.%d", absPath, time.Now().Unix())
+	log.Printf("备份损坏的数据库文件: %s -> %s", absPath, backupPath)
+
+	if err := os.Rename(absPath, backupPath); err != nil {
+		return fmt.Errorf("无法备份损坏的数据库文件: %w", err)
+	}
+
+	// 同时处理可能存在的 WAL 文件
+	walPath := absPath + ".wal"
+	if _, err := os.Stat(walPath); err == nil {
+		walBackupPath := fmt.Sprintf("%s.corrupted.%d", walPath, time.Now().Unix())
+		if err := os.Rename(walPath, walBackupPath); err != nil {
+			log.Printf("警告: 无法备份 WAL 文件: %v", err)
+		}
+	}
+
+	log.Printf("已删除损坏的数据库文件,将创建新的数据库")
+	return nil
 }
 
 // Init 初始化日志表与索引。
