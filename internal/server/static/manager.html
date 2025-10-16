@@ -189,7 +189,11 @@
           <td style="padding:8px 12px; border-bottom:1px solid #1f2937;">${formatBytes(stat.messageBytes)}</td>
           <td style="padding:8px 12px; border-bottom:1px solid #1f2937;">${formatRange(stat.firstTimestamp, stat.lastTimestamp)}</td>
           <td style="padding:8px 12px; border-bottom:1px solid #1f2937;">
-            <button type="button" class="btn-secondary" data-name="${escapeAttr(name)}" data-display="${escapeAttr(displayName)}">清理日志</button>
+            <button type="button" class="btn-secondary"
+              data-name="${escapeAttr(name)}"
+              data-display="${escapeAttr(displayName)}"
+              data-count="${stat.logCount || 0}"
+              data-bytes="${stat.messageBytes || 0}">清理日志</button>
           </td>
         `;
         statsBody.appendChild(tr);
@@ -198,7 +202,25 @@
         btn.addEventListener('click', () => {
           const name = btn.getAttribute('data-name');
           const display = btn.getAttribute('data-display') || name || '(未命名)';
-          if (!confirm('确定清理容器 "' + display + '" 的全部日志吗？')) {
+          const logCount = btn.getAttribute('data-count') || '0';
+          const sizeBytes = btn.getAttribute('data-bytes') || '0';
+
+          // 计算预计耗时 (粗略估算: 每秒删除约 3000 条)
+          const estimatedSeconds = Math.ceil(parseInt(logCount) / 3000);
+          const estimatedTime = estimatedSeconds < 60
+            ? estimatedSeconds + ' 秒'
+            : Math.ceil(estimatedSeconds / 60) + ' 分钟';
+
+          const confirmMsg = `确定清理容器 "${display}" 的全部日志吗？\n\n` +
+            `日志数量: ${formatNumber(parseInt(logCount))}\n` +
+            `占用空间: ${formatBytes(parseInt(sizeBytes))}\n` +
+            `预计耗时: 约 ${estimatedTime}\n\n` +
+            `⚠️  警告：\n` +
+            `• 删除操作不可撤销\n` +
+            `• 大量数据删除可能需要较长时间\n` +
+            `• 删除过程中请勿关闭浏览器`;
+
+          if (!confirm(confirmMsg)) {
             return;
           }
           cleanupContainer(name);
@@ -244,25 +266,41 @@
     });
 
     async function cleanupContainer(name) {
-      messageEl.textContent = '';
+      messageEl.textContent = '正在清理中，请稍候...（大量数据删除可能需要几分钟）';
       messageEl.classList.remove('error');
+
+      // 禁用所有清理按钮，避免重复点击
+      const allButtons = document.querySelectorAll('button[data-name]');
+      allButtons.forEach(btn => btn.disabled = true);
+
       try {
         const res = await fetch('/api/containers/cleanup', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ containerName: name })
         });
+
+        // 恢复按钮状态
+        allButtons.forEach(btn => btn.disabled = false);
+
         if (res.status === 401) {
           redirectToVerify();
           return;
         }
         if (!res.ok) {
-          throw new Error(await res.text());
+          const errText = await res.text();
+          throw new Error(errText);
         }
-        messageEl.textContent = '已清理容器 "' + name + '" 的日志。';
+
+        const result = await res.json();
+        const deletedCount = result.deleted || 0;
+        messageEl.textContent = `✓ 已清理容器 "${name}" 的 ${formatNumber(deletedCount)} 条日志，空间已回收。`;
         messageEl.classList.remove('error');
         fetchStats();
       } catch (err) {
+        // 恢复按钮状态
+        allButtons.forEach(btn => btn.disabled = false);
+
         messageEl.textContent = '清理失败：' + err.message;
         messageEl.classList.add('error');
       }

@@ -341,16 +341,28 @@ func (s *DuckDBStore) ListContainers(ctx context.Context) ([]string, error) {
 
 // CleanupOlderThan 删除在 cutoff 之前的日志。
 func (s *DuckDBStore) CleanupOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	// 删除前健康检查
+	if err := s.healthCheck(ctx); err != nil {
+		log.Printf("删除前健康检查失败: %v", err)
+		return 0, fmt.Errorf("数据库健康检查失败: %w", err)
+	}
+
 	res, err := s.db.ExecContext(ctx, "DELETE FROM logs WHERE timestamp < ?", cutoff.UTC())
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("删除失败: %w", err)
 	}
 	affected, err := res.RowsAffected()
 	if err != nil {
 		return 0, err
 	}
 	if affected > 0 {
-		s.ensureCheckpoint()
+		log.Printf("按时间清理完成: 删除 %d 条日志", affected)
+		if err := s.safeCheckpoint(ctx); err != nil {
+			log.Printf("checkpoint 失败: %v", err)
+		}
+		if err := s.safeVacuum(ctx); err != nil {
+			log.Printf("VACUUM 失败: %v", err)
+		}
 	}
 	return affected, nil
 }
@@ -360,19 +372,35 @@ func (s *DuckDBStore) CleanupExceedingSize(ctx context.Context, maxBytes int64) 
 	if maxBytes <= 0 {
 		return 0, nil
 	}
+
+	// 删除前健康检查
+	if err := s.healthCheck(ctx); err != nil {
+		log.Printf("删除前健康检查失败: %v", err)
+		return 0, fmt.Errorf("数据库健康检查失败: %w", err)
+	}
+
 	var totalDeleted int64
 	const batchSize = 2000
+	checkpointInterval := 0
+
 	for {
+		// 检查 context 是否取消
+		if err := ctx.Err(); err != nil {
+			log.Printf("按大小清理被取消: %v (已删除 %d 条)", err, totalDeleted)
+			return totalDeleted, err
+		}
+
 		size, err := s.fileSize()
 		if err != nil {
-			return totalDeleted, err
+			return totalDeleted, fmt.Errorf("获取文件大小失败: %w", err)
 		}
 		if size <= maxBytes {
 			break
 		}
+
 		res, err := s.db.ExecContext(ctx, "DELETE FROM logs WHERE id IN (SELECT id FROM logs ORDER BY timestamp ASC LIMIT ?)", batchSize)
 		if err != nil {
-			return totalDeleted, err
+			return totalDeleted, fmt.Errorf("删除失败 (已删除 %d 条): %w", totalDeleted, err)
 		}
 		affected, err := res.RowsAffected()
 		if err != nil {
@@ -382,9 +410,28 @@ func (s *DuckDBStore) CleanupExceedingSize(ctx context.Context, maxBytes int64) 
 			break
 		}
 		totalDeleted += affected
+		checkpointInterval += int(affected)
+
+		// 每删除 10000 条执行 checkpoint
+		if checkpointInterval >= 10000 {
+			if err := s.safeCheckpoint(ctx); err != nil {
+				log.Printf("checkpoint 失败: %v (继续删除)", err)
+			}
+			checkpointInterval = 0
+			log.Printf("按大小清理进度: 已删除 %d 条", totalDeleted)
+		}
 	}
+
 	if totalDeleted > 0 {
-		s.ensureCheckpoint()
+		log.Printf("按大小清理完成: 删除 %d 条日志,正在执行空间回收...", totalDeleted)
+		if err := s.safeCheckpoint(ctx); err != nil {
+			log.Printf("最终 checkpoint 失败: %v", err)
+		}
+		if err := s.safeVacuum(ctx); err != nil {
+			log.Printf("VACUUM 失败: %v", err)
+		} else {
+			log.Printf("空间回收完成")
+		}
 	}
 	return totalDeleted, nil
 }
@@ -456,9 +503,16 @@ func (s *DuckDBStore) ContainerStats(ctx context.Context) ([]ContainerStat, erro
 func (s *DuckDBStore) DeleteContainerLogs(ctx context.Context, name string) (int64, error) {
 	name = strings.TrimSpace(name)
 
+	// 删除前执行健康检查
+	if err := s.healthCheck(ctx); err != nil {
+		log.Printf("删除前健康检查失败: %v", err)
+		return 0, fmt.Errorf("数据库健康检查失败: %w", err)
+	}
+
 	// 分批删除,避免大事务导致内存压力过大
-	const batchSize = 5000
+	const batchSize = 3000 // 减小批次大小,降低内存压力
 	var totalDeleted int64
+	checkpointInterval := 0
 
 	for {
 		// 检查 context 是否已取消
@@ -480,7 +534,7 @@ func (s *DuckDBStore) DeleteContainerLogs(ctx context.Context, name string) (int
 		if err != nil {
 			// 如果删除过程中出错,返回已删除的数量和错误
 			log.Printf("删除容器日志出错: %v (已删除 %d 条)", err, totalDeleted)
-			return totalDeleted, err
+			return totalDeleted, fmt.Errorf("删除失败 (已删除 %d 条): %w", totalDeleted, err)
 		}
 
 		affected, err := res.RowsAffected()
@@ -489,23 +543,44 @@ func (s *DuckDBStore) DeleteContainerLogs(ctx context.Context, name string) (int
 		}
 
 		totalDeleted += affected
+		checkpointInterval += int(affected)
 
 		// 如果本批删除的数量少于批次大小,说明已经删除完毕
 		if affected < batchSize {
 			break
 		}
 
-		// 每删除一批后执行 checkpoint,释放空间并避免 WAL 文件过大
-		if totalDeleted%20000 == 0 {
-			s.ensureCheckpoint()
+		// 更频繁地执行 checkpoint (每删除 10000 条),避免 WAL 文件过大
+		if checkpointInterval >= 10000 {
+			if err := s.safeCheckpoint(ctx); err != nil {
+				log.Printf("checkpoint 失败: %v (继续删除)", err)
+			}
+			checkpointInterval = 0
 			log.Printf("删除容器 %q 日志进度: 已删除 %d 条", name, totalDeleted)
 		}
 	}
 
-	// 最终执行 checkpoint
+	// 删除完成后执行 checkpoint 和 VACUUM
 	if totalDeleted > 0 {
-		s.ensureCheckpoint()
-		log.Printf("删除容器 %q 日志完成: 共删除 %d 条", name, totalDeleted)
+		log.Printf("删除容器 %q 日志完成: 共删除 %d 条,正在执行空间回收...", name, totalDeleted)
+
+		// 执行最终 checkpoint
+		if err := s.safeCheckpoint(ctx); err != nil {
+			log.Printf("最终 checkpoint 失败: %v", err)
+		}
+
+		// 执行 VACUUM 回收空间
+		if err := s.safeVacuum(ctx); err != nil {
+			log.Printf("VACUUM 失败: %v (空间可能未完全回收)", err)
+		} else {
+			log.Printf("空间回收完成")
+		}
+
+		// 删除后执行健康检查
+		if err := s.healthCheck(ctx); err != nil {
+			log.Printf("删除后健康检查失败: %v", err)
+			return totalDeleted, fmt.Errorf("删除成功但数据库可能已损坏: %w", err)
+		}
 	}
 
 	return totalDeleted, nil
@@ -519,6 +594,67 @@ func (s *DuckDBStore) ensureCheckpoint() {
 	if _, err := s.db.ExecContext(ctx, "CHECKPOINT"); err != nil && !errors.Is(err, context.Canceled) {
 		log.Printf("duckdb checkpoint failed: %v", err)
 	}
+}
+
+// safeCheckpoint 在指定 context 下安全地执行 checkpoint
+func (s *DuckDBStore) safeCheckpoint(ctx context.Context) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("database not initialized")
+	}
+
+	// 使用带超时的 context,避免 checkpoint 阻塞过久
+	checkpointCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	if _, err := s.db.ExecContext(checkpointCtx, "CHECKPOINT"); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("checkpoint 超时")
+		}
+		return err
+	}
+	return nil
+}
+
+// safeVacuum 安全地执行 VACUUM,回收删除后的空间
+func (s *DuckDBStore) safeVacuum(ctx context.Context) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("database not initialized")
+	}
+
+	// VACUUM 可能耗时较长,设置更长的超时
+	vacuumCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+
+	if _, err := s.db.ExecContext(vacuumCtx, "VACUUM"); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("VACUUM 超时")
+		}
+		return err
+	}
+	return nil
+}
+
+// healthCheck 检查数据库健康状态
+func (s *DuckDBStore) healthCheck(ctx context.Context) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("database not initialized")
+	}
+
+	// 检查数据库连接
+	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	if err := s.db.PingContext(checkCtx); err != nil {
+		return fmt.Errorf("ping 失败: %w", err)
+	}
+
+	// 执行简单查询验证表结构
+	var count int64
+	if err := s.db.QueryRowContext(checkCtx, "SELECT COUNT(*) FROM logs LIMIT 1").Scan(&count); err != nil {
+		return fmt.Errorf("查询验证失败: %w", err)
+	}
+
+	return nil
 }
 
 func (s *DuckDBStore) fileSize() (int64, error) {

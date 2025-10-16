@@ -211,11 +211,26 @@ func preferredContainerName(labels map[string]string, fallback string) string {
 		labels["com.docker.compose.service"],
 	}
 	for _, candidate := range candidates {
-		if name := simplifyInstanceName(candidate); name != "" {
-			return name
+		if candidate != "" {
+			if name := simplifyInstanceName(candidate); name != "" {
+				return name
+			}
 		}
 	}
-	return simplifyInstanceName(fallback)
+
+	// 确保 fallback 不为空
+	if fallback == "" {
+		return ""
+	}
+
+	simplified := simplifyInstanceName(fallback)
+	if simplified == "" {
+		// 如果简化后为空，返回原始 fallback（去除前导斜杠）
+		// 这种情况理论上不应该发生，但作为安全保障
+		return strings.TrimPrefix(fallback, "/")
+	}
+
+	return simplified
 }
 
 func simplifyInstanceName(name string) string {
@@ -224,12 +239,17 @@ func simplifyInstanceName(name string) string {
 		return ""
 	}
 	name = strings.TrimPrefix(name, "/")
+
+	// 处理 Docker Swarm 容器名格式: service.1.xxxxx
+	// 只有在恰好有 2 个点，且第二部分是纯数字时才简化为服务名
+	// 其他格式（如 docker compose 的 project.service.replica）保持不变
 	if strings.Count(name, ".") == 2 {
 		parts := strings.SplitN(name, ".", 3)
 		if len(parts) == 3 && isAllDigits(parts[1]) {
 			return parts[0]
 		}
 	}
+
 	return name
 }
 
