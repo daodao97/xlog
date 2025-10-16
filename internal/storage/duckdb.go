@@ -9,13 +9,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	_ "github.com/marcboeker/go-duckdb"
 )
-
-const vacuumTimeout = 2 * time.Minute
 
 // LogEntry 表示一条日志记录。
 type LogEntry struct {
@@ -79,8 +76,6 @@ type Store interface {
 type DuckDBStore struct {
 	db   *sql.DB
 	path string
-
-	vacuumMu sync.Mutex
 }
 
 // NewDuckDB 创建 DuckDB 存储实例。
@@ -263,7 +258,7 @@ func (s *DuckDBStore) CleanupOlderThan(ctx context.Context, cutoff time.Time) (i
 		return 0, err
 	}
 	if affected > 0 {
-		s.runVacuum()
+		s.ensureCheckpoint()
 	}
 	return affected, nil
 }
@@ -297,7 +292,7 @@ func (s *DuckDBStore) CleanupExceedingSize(ctx context.Context, maxBytes int64) 
 		totalDeleted += affected
 	}
 	if totalDeleted > 0 {
-		s.runVacuum()
+		s.ensureCheckpoint()
 	}
 	return totalDeleted, nil
 }
@@ -377,28 +372,19 @@ func (s *DuckDBStore) DeleteContainerLogs(ctx context.Context, name string) (int
 		return 0, err
 	}
 	if affected > 0 {
-		s.runVacuum()
+		s.ensureCheckpoint()
 	}
 	return affected, nil
 }
 
-func (s *DuckDBStore) runVacuum() {
+func (s *DuckDBStore) ensureCheckpoint() {
 	if s == nil || s.db == nil {
 		return
 	}
-	s.vacuumMu.Lock()
-	defer s.vacuumMu.Unlock()
-
-	ctx, cancel := context.WithTimeout(context.Background(), vacuumTimeout)
-	defer cancel()
-	if err := s.vacuum(ctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-		log.Printf("duckdb vacuum failed: %v", err)
+	ctx := context.Background()
+	if _, err := s.db.ExecContext(ctx, "CHECKPOINT"); err != nil && !errors.Is(err, context.Canceled) {
+		log.Printf("duckdb checkpoint failed: %v", err)
 	}
-}
-
-func (s *DuckDBStore) vacuum(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, "VACUUM")
-	return err
 }
 
 func (s *DuckDBStore) fileSize() (int64, error) {
@@ -420,8 +406,6 @@ func (s *DuckDBStore) Close() error {
 	if s.db == nil {
 		return nil
 	}
-	s.vacuumMu.Lock()
-	defer s.vacuumMu.Unlock()
 	return s.db.Close()
 }
 
