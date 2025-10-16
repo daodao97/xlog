@@ -18,7 +18,7 @@ services:
       - XLOG_LOG_TAIL=200
       - XLOG_LOG_SINCE=15m
     volumes:
-      - ./data:/data
+      - ../xlog-data:/data
       - /var/run/docker.sock:/var/run/docker.sock:ro
 
   # demo:
