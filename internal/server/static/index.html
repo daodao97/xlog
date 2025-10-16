@@ -441,6 +441,7 @@
             <button type="submit">查询</button>
             <button type="button" id="refresh-btn" class="secondary-button">刷新容器</button>
             <button type="button" id="advanced-toggle" class="secondary-button" aria-expanded="false">展开高级筛选</button>
+            <button type="button" id="reset-btn" class="secondary-button">重置条件</button>
           </div>
         </div>
       </div>
@@ -519,6 +520,7 @@
     const untilSelect = document.getElementById('until-select');
     const advancedToggle = document.getElementById('advanced-toggle');
     const advancedSection = document.getElementById('advanced-section');
+    const resetBtn = document.getElementById('reset-btn');
 
     let currentParams = {};
     let currentPage = 1;
@@ -675,6 +677,26 @@
       if (item) {
         item.scrollIntoView({ block: 'nearest' });
       }
+    }
+
+    function resetFilters() {
+      selectedContainer = '';
+      containerInput.value = '';
+      highlightIndex = -1;
+      renderContainerOptions();
+
+      document.getElementById('search-input').value = '';
+      sinceInput.value = '';
+      sinceSelect.value = '';
+      untilInput.value = '';
+      untilSelect.value = '';
+      document.getElementById('limit-input').value = '200';
+      document.getElementById('stream-select').value = '';
+      document.getElementById('level-select').value = '';
+
+      currentLimit = 200;
+      currentPage = 1;
+      setAdvancedVisible(false);
     }
 
     function setAdvancedVisible(visible) {
@@ -943,6 +965,12 @@
 
     document.getElementById('prev-page').addEventListener('click', () => changePage(-1));
     document.getElementById('next-page').addEventListener('click', () => changePage(1));
+    resetBtn.addEventListener('click', () => {
+      resetFilters();
+      updateURL({});
+      fetchContainers('');
+      fetchLogs({});
+    });
 
     containerInput.addEventListener('focus', () => {
       openContainerMenu();
