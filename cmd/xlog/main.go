@@ -152,6 +152,7 @@ func loadConfig() config {
 		cfg.ConfigPath = pathUsed
 		applyFileConfig(&cfg, fileCfg)
 		if strings.TrimSpace(fileCfg.ViewPassword) != "" {
+			log.Printf("从配置文件加载访问密码 (path=%s)", pathUsed)
 			passwordProvided = true
 		}
 		if len(fileCfg.ContainerAllowPatterns) > 0 {
@@ -161,40 +162,44 @@ func loadConfig() config {
 		log.Printf("读取配置文件失败: %v", err)
 	}
 
-    if applyEnvOverrides(&cfg) {
-        passwordProvided = true
-    }
+	if applyEnvOverrides(&cfg) {
+		log.Printf("从环境变量覆盖访问密码")
+		passwordProvided = true
+	}
 
-    cfg.ContainerAllowPatterns = normalizePatterns(cfg.ContainerAllowPatterns)
+	cfg.ContainerAllowPatterns = normalizePatterns(cfg.ContainerAllowPatterns)
 
-    if cfg.ViewPassword == "" {
-        for _, path := range []string{cfg.ConfigPath, cfg.PrimaryConfigPath} {
-            if strings.TrimSpace(path) == "" {
-                continue
-            }
-            if fileCfg, err := readConfigFile(path); err == nil {
-                if v := strings.TrimSpace(fileCfg.ViewPassword); v != "" {
-                    cfg.ViewPassword = v
-                    passwordProvided = true
-                    break
-                }
-            }
-        }
-    }
+	if cfg.ViewPassword == "" {
+		for _, path := range []string{cfg.ConfigPath, cfg.PrimaryConfigPath} {
+			if strings.TrimSpace(path) == "" {
+				continue
+			}
+			if fileCfg, err := readConfigFile(path); err == nil {
+				if v := strings.TrimSpace(fileCfg.ViewPassword); v != "" {
+					cfg.ViewPassword = v
+					log.Printf("沿用已有访问密码 (path=%s)", path)
+					passwordProvided = true
+					break
+				}
+			}
+		}
+	}
 
-    cfg.ViewPassword = strings.TrimSpace(cfg.ViewPassword)
+	cfg.ViewPassword = strings.TrimSpace(cfg.ViewPassword)
 
-    generated := false
-    if cfg.ViewPassword == "" && !passwordProvided {
-        cfg.ViewPassword = generatePassword(16)
-        generated = true
-    }
+	generated := false
+	if cfg.ViewPassword == "" && !passwordProvided {
+		cfg.ViewPassword = generatePassword(16)
+		generated = true
+	}
 
-    if err := persistConfig(&cfg); err != nil {
-        log.Printf("保存配置文件失败: %v", err)
-    } else if generated {
-        log.Printf("生成随机访问密码: %s", cfg.ViewPassword)
-    }
+	if err := persistConfig(&cfg); err != nil {
+		log.Printf("保存配置文件失败: %v", err)
+	} else if generated {
+		log.Printf("生成随机访问密码: %s", cfg.ViewPassword)
+	} else {
+		log.Printf("访问密码已就绪 (source=%s)", passwordSource(passwordProvided, generated))
+	}
 
 	log.Printf("服务配置: addr=%s db=%s tail=%s since=%s clean=%s retention=%s max=%d path=%s auth=%t cookie=%s ttl=%s secure=%t allow=%d",
 		cfg.HTTPAddr,
@@ -420,6 +425,16 @@ func boolFromEnv(key string) (bool, bool) {
 		return false, false
 	}
 	return b, true
+}
+
+func passwordSource(envProvided bool, generated bool) string {
+	if generated {
+		return "generated"
+	}
+	if envProvided {
+		return "env"
+	}
+	return "config"
 }
 
 var rng = rand.New(rand.NewSource(time.Now().UnixNano()))
