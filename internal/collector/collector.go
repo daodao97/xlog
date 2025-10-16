@@ -208,7 +208,6 @@ func normalizeContainerName(names []string) string {
 func preferredContainerName(labels map[string]string, fallback string) string {
 	candidates := []string{
 		labels["com.docker.swarm.service.name"],
-		labels["com.docker.compose.service"],
 	}
 	for _, candidate := range candidates {
 		if candidate != "" {
@@ -216,6 +215,16 @@ func preferredContainerName(labels map[string]string, fallback string) string {
 				return name
 			}
 		}
+	}
+
+	composeService := simplifyInstanceName(labels["com.docker.compose.service"])
+	if composeService != "" {
+		if project := simplifyInstanceName(labels["com.docker.compose.project"]); project != "" {
+			if name := simplifyInstanceName(project + "." + composeService); name != "" {
+				return name
+			}
+		}
+		return composeService
 	}
 
 	// 确保 fallback 不为空

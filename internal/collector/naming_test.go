@@ -90,6 +90,15 @@ func TestPreferredContainerName(t *testing.T) {
 		},
 		{
 			labels: map[string]string{
+				"com.docker.compose.project": "demo",
+				"com.docker.compose.service": "nginx",
+			},
+			fallback: "demo-nginx-1",
+			expected: "demo.nginx",
+			desc:     "compose 项目名与服务名应该组合返回",
+		},
+		{
+			labels: map[string]string{
 				"com.docker.swarm.service.name": "web",
 			},
 			fallback: "web.1.abc123",
@@ -98,8 +107,8 @@ func TestPreferredContainerName(t *testing.T) {
 		},
 		{
 			labels: map[string]string{
-				"com.docker.swarm.service.name":  "api",
-				"com.docker.compose.service":     "backend",
+				"com.docker.swarm.service.name": "api",
+				"com.docker.compose.service":    "backend",
 			},
 			fallback: "random_name",
 			expected: "api",
