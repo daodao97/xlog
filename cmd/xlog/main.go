@@ -50,7 +50,9 @@ func main() {
 	cfg := loadConfig()
 	compiledPatterns, err := compileAllowPatterns(cfg.ContainerAllowPatterns)
 	if err != nil {
-		log.Fatalf("容器白名单配置错误: %v", err)
+		log.Printf("容器白名单配置错误(%v)，已回退为采集全部容器", err)
+		cfg.ContainerAllowPatterns = nil
+		compiledPatterns = nil
 	}
 	cfgManager := newConfigManager(&cfg)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
