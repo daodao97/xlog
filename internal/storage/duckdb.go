@@ -142,8 +142,8 @@ func (s *DuckDBStore) QueryLogs(ctx context.Context, q LogQuery) (LogResult, err
 	builder.WriteString("SELECT id, timestamp, container_id, container_name, stream, level, message FROM logs")
 	filters := make([]string, 0, 5)
 	if q.ContainerName != "" {
-		filters = append(filters, "container_name = ?")
-		args = append(args, q.ContainerName)
+		filters = append(filters, "LOWER(container_name) LIKE ?")
+		args = append(args, "%"+strings.ToLower(q.ContainerName)+"%")
 	}
 	if q.Stream != "" {
 		filters = append(filters, "stream = ?")
