@@ -147,22 +147,31 @@ func loadConfig() config {
 	if cfg.ConfigPath == defaultConfigPath {
 		paths = append(paths, fallbackConfigPaths...)
 	}
+	passwordProvided := false
 	if fileCfg, pathUsed, err := loadConfigFromPaths(paths); err == nil {
 		cfg.ConfigPath = pathUsed
 		applyFileConfig(&cfg, fileCfg)
+		if strings.TrimSpace(fileCfg.ViewPassword) != "" {
+			passwordProvided = true
+		}
+		if len(fileCfg.ContainerAllowPatterns) > 0 {
+			cfg.ContainerAllowPatterns = append([]string(nil), fileCfg.ContainerAllowPatterns...)
+		}
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 		log.Printf("读取配置文件失败: %v", err)
 	}
 
-	applyEnvOverrides(&cfg)
+	if applyEnvOverrides(&cfg) {
+		passwordProvided = true
+	}
 	cfg.ContainerAllowPatterns = normalizePatterns(cfg.ContainerAllowPatterns)
 	cfg.ViewPassword = strings.TrimSpace(cfg.ViewPassword)
-	if cfg.ViewPassword == "" {
+	if cfg.ViewPassword == "" && !passwordProvided {
 		cfg.ViewPassword = generatePassword(16)
 		log.Printf("生成随机访问密码: %s", cfg.ViewPassword)
-	}
-	if err := persistConfig(&cfg); err != nil {
-		log.Printf("保存配置文件失败: %v", err)
+		if err := persistConfig(&cfg); err != nil {
+			log.Printf("保存配置文件失败: %v", err)
+		}
 	}
 
 	log.Printf("服务配置: addr=%s db=%s tail=%s since=%s clean=%s retention=%s max=%d path=%s auth=%t cookie=%s ttl=%s secure=%t allow=%d",
@@ -310,7 +319,8 @@ func applyFileConfig(cfg *config, fc fileConfig) {
 	}
 }
 
-func applyEnvOverrides(cfg *config) {
+func applyEnvOverrides(cfg *config) bool {
+	updated := false
 	if v := os.Getenv("XLOG_HTTP_ADDR"); v != "" {
 		cfg.HTTPAddr = v
 	}
@@ -334,6 +344,7 @@ func applyEnvOverrides(cfg *config) {
 	}
 	if v := os.Getenv("XLOG_VIEW_PASSWORD"); v != "" {
 		cfg.ViewPassword = v
+		updated = true
 	}
 	if v := os.Getenv("XLOG_AUTH_COOKIE_NAME"); v != "" {
 		cfg.AuthCookieName = v
@@ -347,6 +358,7 @@ func applyEnvOverrides(cfg *config) {
 	if patterns := os.Getenv("XLOG_CONTAINER_ALLOW_PATTERNS"); patterns != "" {
 		cfg.ContainerAllowPatterns = splitAndTrim(patterns)
 	}
+	return updated
 }
 
 func durationFromEnv(key string) (time.Duration, bool) {
