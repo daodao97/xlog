@@ -60,6 +60,10 @@
       cursor: pointer;
       font-size: 14px;
     }
+    .btn-compact {
+      padding: 6px 10px;
+      font-size: 12px;
+    }
     .btn-primary {
       background: #2563eb;
       color: #f8fafc;
@@ -84,6 +88,42 @@
     }
     .message.error {
       color: #f87171;
+    }
+    .cleanup-actions {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 8px;
+    }
+    .cleanup-shortcuts {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: #94a3b8;
+    }
+    .cleanup-shortcuts span {
+      color: #cbd5f5;
+    }
+    .cleanup-custom {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .cleanup-custom input {
+      background: #0f172a;
+      border: 1px solid #475569;
+      border-radius: 6px;
+      padding: 6px 8px;
+      color: #f8fafc;
+      font-size: 12px;
+    }
+    .cleanup-custom input:focus {
+      outline: none;
+      border-color: #2563eb;
+      box-shadow: 0 0 0 1px #2563eb44;
     }
   </style>
 </head>
@@ -189,41 +229,111 @@
           <td style="padding:8px 12px; border-bottom:1px solid #1f2937;">${formatBytes(stat.messageBytes)}</td>
           <td style="padding:8px 12px; border-bottom:1px solid #1f2937;">${formatRange(stat.firstTimestamp, stat.lastTimestamp)}</td>
           <td style="padding:8px 12px; border-bottom:1px solid #1f2937;">
-            <button type="button" class="btn-secondary"
-              data-name="${escapeAttr(name)}"
-              data-display="${escapeAttr(displayName)}"
-              data-count="${stat.logCount || 0}"
-              data-bytes="${stat.messageBytes || 0}">清理日志</button>
+            <div class="cleanup-actions">
+              <button type="button" class="btn-secondary"
+                data-action="cleanup-all"
+                data-name="${escapeAttr(name)}"
+                data-display="${escapeAttr(displayName)}"
+                data-count="${stat.logCount || 0}"
+                data-bytes="${stat.messageBytes || 0}">清理全部</button>
+              <div class="cleanup-shortcuts">
+                <span>按日期:</span>
+                <button type="button" class="btn-secondary btn-compact"
+                  data-action="cleanup-days"
+                  data-days="1"
+                  data-name="${escapeAttr(name)}"
+                  data-display="${escapeAttr(displayName)}">一天前</button>
+                <button type="button" class="btn-secondary btn-compact"
+                  data-action="cleanup-days"
+                  data-days="2"
+                  data-name="${escapeAttr(name)}"
+                  data-display="${escapeAttr(displayName)}">两天前</button>
+                <button type="button" class="btn-secondary btn-compact"
+                  data-action="cleanup-days"
+                  data-days="7"
+                  data-name="${escapeAttr(name)}"
+                  data-display="${escapeAttr(displayName)}">七天前</button>
+                <div class="cleanup-custom">
+                  <input type="datetime-local"
+                    class="cleanup-input"
+                    data-name="${escapeAttr(name)}"
+                    data-display="${escapeAttr(displayName)}"
+                    aria-label="选择要清理的截止时间" />
+                  <button type="button" class="btn-secondary btn-compact"
+                    data-action="cleanup-date"
+                    data-name="${escapeAttr(name)}"
+                    data-display="${escapeAttr(displayName)}">按日期执行</button>
+                </div>
+              </div>
+            </div>
           </td>
         `;
         statsBody.appendChild(tr);
       });
-      statsBody.querySelectorAll('button[data-name]').forEach(btn => {
+      statsBody.querySelectorAll('button[data-action="cleanup-all"]').forEach(btn => {
         btn.addEventListener('click', () => {
-          const name = btn.getAttribute('data-name');
+          const name = btn.getAttribute('data-name') || '';
           const display = btn.getAttribute('data-display') || name || '(未命名)';
-          const logCount = btn.getAttribute('data-count') || '0';
-          const sizeBytes = btn.getAttribute('data-bytes') || '0';
+          const logCount = parseInt(btn.getAttribute('data-count') || '0', 10);
+          const sizeBytes = parseInt(btn.getAttribute('data-bytes') || '0', 10);
 
-          // 计算预计耗时 (粗略估算: 每秒删除约 3000 条)
-          const estimatedSeconds = Math.ceil(parseInt(logCount) / 3000);
-          const estimatedTime = estimatedSeconds < 60
-            ? estimatedSeconds + ' 秒'
-            : Math.ceil(estimatedSeconds / 60) + ' 分钟';
+          cleanupContainer({
+            name,
+            displayName: display,
+            mode: 'all',
+            logCount: Number.isFinite(logCount) ? logCount : 0,
+            sizeBytes: Number.isFinite(sizeBytes) ? sizeBytes : 0
+          });
+        });
+      });
 
-          const confirmMsg = `确定清理容器 "${display}" 的全部日志吗？\n\n` +
-            `日志数量: ${formatNumber(parseInt(logCount))}\n` +
-            `占用空间: ${formatBytes(parseInt(sizeBytes))}\n` +
-            `预计耗时: 约 ${estimatedTime}\n\n` +
-            `⚠️  警告：\n` +
-            `• 删除操作不可撤销\n` +
-            `• 大量数据删除可能需要较长时间\n` +
-            `• 删除过程中请勿关闭浏览器`;
-
-          if (!confirm(confirmMsg)) {
+      statsBody.querySelectorAll('button[data-action="cleanup-days"]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const name = btn.getAttribute('data-name') || '';
+          const display = btn.getAttribute('data-display') || name || '(未命名)';
+          const days = parseInt(btn.getAttribute('data-days') || '0', 10);
+          if (!Number.isFinite(days) || days <= 0) {
+            messageEl.textContent = '无效的快捷时间选项。';
+            messageEl.classList.add('error');
             return;
           }
-          cleanupContainer(name);
+          const cutoffDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+          const humanLabel = `${days === 1 ? '1 天前' : days + ' 天前'}（${formatTime(cutoffDate)}）`;
+
+          cleanupContainer({
+            name,
+            displayName: display,
+            mode: 'before',
+            cutoffISO: cutoffDate.toISOString(),
+            cutoffLabel: humanLabel
+          });
+        });
+      });
+
+      statsBody.querySelectorAll('button[data-action="cleanup-date"]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const name = btn.getAttribute('data-name') || '';
+          const display = btn.getAttribute('data-display') || name || '(未命名)';
+          const container = btn.closest('.cleanup-custom');
+          const input = container ? container.querySelector('input[type="datetime-local"]') : null;
+          if (!input || !input.value) {
+            messageEl.textContent = '请选择要清理的截止时间。';
+            messageEl.classList.add('error');
+            return;
+          }
+          const cutoffDate = new Date(input.value);
+          if (Number.isNaN(cutoffDate.getTime())) {
+            messageEl.textContent = '截止时间格式无效。';
+            messageEl.classList.add('error');
+            return;
+          }
+          cleanupContainer({
+            name,
+            displayName: display,
+            mode: 'before',
+            cutoffISO: cutoffDate.toISOString(),
+            cutoffLabel: formatTime(cutoffDate)
+          });
         });
       });
     }
@@ -265,44 +375,106 @@
       fetchConfig();
     });
 
-    async function cleanupContainer(name) {
-      messageEl.textContent = '正在清理中，请稍候...（大量数据删除可能需要几分钟）';
+    async function cleanupContainer(options) {
+      const {
+        name,
+        displayName,
+        logCount = 0,
+        sizeBytes = 0,
+        mode = 'all',
+        cutoffISO,
+        cutoffLabel
+      } = options || {};
+
+      const normalizedName = (name || '').trim();
+      const display = displayName || normalizedName || '(未命名)';
+      if (!normalizedName) {
+        messageEl.textContent = '容器名称无效，无法执行清理。';
+        messageEl.classList.add('error');
+        return;
+      }
+
+      let readableCutoff = cutoffLabel;
+      if (mode === 'before') {
+        if (!cutoffISO) {
+          messageEl.textContent = '请选择有效的截止时间。';
+          messageEl.classList.add('error');
+          return;
+        }
+        readableCutoff = readableCutoff || formatTime(cutoffISO);
+      }
+
+      let confirmMsg = '';
+      if (mode === 'before') {
+        confirmMsg = `确定清理容器 "${display}" 在 ${readableCutoff} 之前的日志吗？\n\n` +
+          `⚠️ 警告：\n` +
+          `• 删除操作不可撤销\n` +
+          `• 本次仅删除早于指定时间的日志\n` +
+          `• 删除过程中请勿关闭浏览器`;
+      } else {
+        const estimatedSeconds = Math.ceil(logCount / 3000);
+        const estimatedTime = estimatedSeconds < 60
+          ? estimatedSeconds + ' 秒'
+          : Math.ceil(estimatedSeconds / 60) + ' 分钟';
+
+        confirmMsg = `确定清理容器 "${display}" 的全部日志吗？\n\n` +
+          `日志数量: ${formatNumber(logCount)}\n` +
+          `占用空间: ${formatBytes(sizeBytes)}\n` +
+          `预计耗时: 约 ${estimatedTime}\n\n` +
+          `⚠️  警告：\n` +
+          `• 删除操作不可撤销\n` +
+          `• 大量数据删除可能需要较长时间\n` +
+          `• 删除过程中请勿关闭浏览器`;
+      }
+
+      if (!confirm(confirmMsg)) {
+        return;
+      }
+
+      if (mode === 'before') {
+        messageEl.textContent = `正在清理容器 "${display}" 在 ${readableCutoff} 之前的日志，请稍候…`;
+      } else {
+        messageEl.textContent = `正在清理容器 "${display}" 的日志，请稍候…`;
+      }
       messageEl.classList.remove('error');
 
-      // 禁用所有清理按钮，避免重复点击
       const allButtons = document.querySelectorAll('button[data-name]');
       allButtons.forEach(btn => btn.disabled = true);
 
       try {
+        const payload = { containerName: normalizedName };
+        if (mode === 'before') {
+          payload.before = cutoffISO;
+        }
+
         const res = await fetch('/api/containers/cleanup', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ containerName: name })
+          body: JSON.stringify(payload)
         });
-
-        // 恢复按钮状态
-        allButtons.forEach(btn => btn.disabled = false);
 
         if (res.status === 401) {
           redirectToVerify();
           return;
         }
         if (!res.ok) {
-          const errText = await res.text();
-          throw new Error(errText);
+          throw new Error(await res.text());
         }
 
         const result = await res.json();
         const deletedCount = result.deleted || 0;
-        messageEl.textContent = `✓ 已清理容器 "${name}" 的 ${formatNumber(deletedCount)} 条日志，空间已回收。`;
+        if (mode === 'before') {
+          messageEl.textContent = `✓ 已清理容器 "${display}" 在 ${readableCutoff} 之前的 ${formatNumber(deletedCount)} 条日志。`;
+        } else {
+          messageEl.textContent = `✓ 已清理容器 "${display}" 的 ${formatNumber(deletedCount)} 条日志，空间已回收。`;
+        }
         messageEl.classList.remove('error');
         fetchStats();
       } catch (err) {
-        // 恢复按钮状态
-        allButtons.forEach(btn => btn.disabled = false);
-
         messageEl.textContent = '清理失败：' + err.message;
         messageEl.classList.add('error');
+      } finally {
+        allButtons.forEach(btn => btn.disabled = false);
       }
     }
 

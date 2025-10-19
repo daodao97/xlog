@@ -214,6 +214,8 @@ func (s *Server) handleContainerCleanup(w http.ResponseWriter, r *http.Request) 
 	}
 	var payload struct {
 		ContainerName *string `json:"containerName"`
+		Before        *string `json:"before"`
+		BeforeDays    *int    `json:"beforeDays"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		http.Error(w, "invalid payload", http.StatusBadRequest)
@@ -225,17 +227,57 @@ func (s *Server) handleContainerCleanup(w http.ResponseWriter, r *http.Request) 
 	}
 	name := strings.TrimSpace(*payload.ContainerName)
 
+	var cutoff *time.Time
+	if payload.BeforeDays != nil {
+		if *payload.BeforeDays <= 0 {
+			http.Error(w, "beforeDays must be positive", http.StatusBadRequest)
+			return
+		}
+		d := time.Duration(*payload.BeforeDays) * 24 * time.Hour
+		t := time.Now().Add(-d).UTC()
+		cutoff = &t
+	}
+	if payload.Before != nil {
+		value := strings.TrimSpace(*payload.Before)
+		if value == "" {
+			http.Error(w, "before must be non-empty", http.StatusBadRequest)
+			return
+		}
+		t, err := parseTimeInput(value)
+		if err != nil {
+			http.Error(w, "invalid before value", http.StatusBadRequest)
+			return
+		}
+		cutoff = &t
+	}
+
 	// 为大数据量删除操作设置更长的超时时间 (5分钟)
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
-	deleted, err := s.store.DeleteContainerLogs(ctx, name)
+	var (
+		deleted int64
+		err     error
+	)
+	if cutoff != nil {
+		deleted, err = s.store.DeleteContainerLogsBefore(ctx, name, *cutoff)
+	} else {
+		deleted, err = s.store.DeleteContainerLogs(ctx, name)
+	}
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			log.Printf("cleanup container %s timeout (deleted: %d)", name, deleted)
+			if cutoff != nil {
+				log.Printf("cleanup container %s before %s timeout (deleted: %d)", name, cutoff.Format(time.RFC3339), deleted)
+			} else {
+				log.Printf("cleanup container %s timeout (deleted: %d)", name, deleted)
+			}
 			http.Error(w, fmt.Sprintf("cleanup timeout, partially deleted: %d rows", deleted), http.StatusRequestTimeout)
 		} else {
-			log.Printf("cleanup container %s failed: %v (deleted: %d)", name, err, deleted)
+			if cutoff != nil {
+				log.Printf("cleanup container %s before %s failed: %v (deleted: %d)", name, cutoff.Format(time.RFC3339), err, deleted)
+			} else {
+				log.Printf("cleanup container %s failed: %v (deleted: %d)", name, err, deleted)
+			}
 			http.Error(w, "cleanup failed", http.StatusInternalServerError)
 		}
 		return

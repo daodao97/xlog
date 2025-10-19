@@ -69,6 +69,7 @@ type Store interface {
 	Stats(ctx context.Context) (Stats, error)
 	ContainerStats(ctx context.Context) ([]ContainerStat, error)
 	DeleteContainerLogs(ctx context.Context, name string) (int64, error)
+	DeleteContainerLogsBefore(ctx context.Context, name string, cutoff time.Time) (int64, error)
 	Close() error
 }
 
@@ -577,6 +578,83 @@ func (s *DuckDBStore) DeleteContainerLogs(ctx context.Context, name string) (int
 		}
 
 		// 删除后执行健康检查
+		if err := s.healthCheck(ctx); err != nil {
+			log.Printf("删除后健康检查失败: %v", err)
+			return totalDeleted, fmt.Errorf("删除成功但数据库可能已损坏: %w", err)
+		}
+	}
+
+	return totalDeleted, nil
+}
+
+func (s *DuckDBStore) DeleteContainerLogsBefore(ctx context.Context, name string, cutoff time.Time) (int64, error) {
+	name = strings.TrimSpace(name)
+	cutoff = cutoff.UTC()
+
+	if cutoff.IsZero() {
+		return 0, fmt.Errorf("cutoff time is required")
+	}
+
+	if err := s.healthCheck(ctx); err != nil {
+		log.Printf("删除前健康检查失败: %v", err)
+		return 0, fmt.Errorf("数据库健康检查失败: %w", err)
+	}
+
+	const batchSize = 3000
+	var totalDeleted int64
+	checkpointInterval := 0
+
+	for {
+		if err := ctx.Err(); err != nil {
+			log.Printf("删除容器 %q 指定时间前的日志被取消: %v (已删除 %d 条)", name, err, totalDeleted)
+			return totalDeleted, err
+		}
+
+		res, err := s.db.ExecContext(ctx, `
+			DELETE FROM logs
+			WHERE id IN (
+				SELECT id FROM logs
+				WHERE COALESCE(container_name, '') = ?
+				  AND timestamp < ?
+				LIMIT ?
+			)
+		`, name, cutoff, batchSize)
+		if err != nil {
+			log.Printf("删除容器 %q 指定时间前的日志出错: %v (已删除 %d 条)", name, err, totalDeleted)
+			return totalDeleted, fmt.Errorf("删除失败 (已删除 %d 条): %w", totalDeleted, err)
+		}
+
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return totalDeleted, err
+		}
+
+		totalDeleted += affected
+		checkpointInterval += int(affected)
+
+		if affected < batchSize {
+			break
+		}
+
+		if checkpointInterval >= 10000 {
+			if err := s.safeCheckpoint(ctx); err != nil {
+				log.Printf("checkpoint 失败: %v (继续删除)", err)
+			}
+			checkpointInterval = 0
+			log.Printf("删除容器 %q 在 %s 前日志进度: 已删除 %d 条", name, cutoff.Format(time.RFC3339), totalDeleted)
+		}
+	}
+
+	if totalDeleted > 0 {
+		log.Printf("删除容器 %q 在 %s 前的日志完成: 共删除 %d 条, 正在执行空间回收...", name, cutoff.Format(time.RFC3339), totalDeleted)
+		if err := s.safeCheckpoint(ctx); err != nil {
+			log.Printf("最终 checkpoint 失败: %v", err)
+		}
+		if err := s.safeVacuum(ctx); err != nil {
+			log.Printf("VACUUM 失败: %v (空间可能未完全回收)", err)
+		} else {
+			log.Printf("空间回收完成")
+		}
 		if err := s.healthCheck(ctx); err != nil {
 			log.Printf("删除后健康检查失败: %v", err)
 			return totalDeleted, fmt.Errorf("删除成功但数据库可能已损坏: %w", err)
