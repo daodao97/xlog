@@ -12,11 +12,45 @@ services:
     restart: unless-stopped
     ports:
       - "8888:8888"
+
+    # 资源限制
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'           # 限制最多使用 1 个 CPU 核心
+          memory: 512M          # 限制最大内存为 512MB
+        reservations:
+          cpus: '0.25'          # 预留 0.25 个 CPU 核心
+          memory: 128M          # 预留 128MB 内存
+
+    # 内存交换限制
+    mem_swappiness: 0           # 禁用内存交换
+
+    # PID 限制
+    pids_limit: 100             # 限制容器最多创建 100 个进程
+
+    # 安全选项
+    security_opt:
+      - no-new-privileges:true  # 禁止容器内进程获取新权限
+
+    # 限制容器能力
+    cap_drop:
+      - ALL                     # 删除所有能力
+    cap_add:
+      - NET_BIND_SERVICE        # 仅添加绑定端口所需的能力
+      - DAC_OVERRIDE            # 文件访问权限
+      - CHOWN                   # 修改文件所有者
+
+    # 网络配置
+    networks:
+      - xlog_network
+
     environment:
       - XLOG_HTTP_ADDR=0.0.0.0:8888
       - XLOG_DUCKDB_PATH=/data/logs.duckdb
       - XLOG_LOG_TAIL=200
       - XLOG_LOG_SINCE=15m
+
     volumes:
       - ../xlog-data:/data
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -25,3 +59,12 @@ services:
   #   image: busybox:1.36
   #   restart: unless-stopped
   #   command: /bin/sh -c "i=0; while true; do echo \"demo log $${i}\"; >&2 echo \"error log $${i}\"; i=$$((i+1)); sleep 5; done"
+
+networks:
+  xlog_network:
+    driver: bridge
+    driver_opts:
+      com.docker.network.driver.mtu: 1500
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
