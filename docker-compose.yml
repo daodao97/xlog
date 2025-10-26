@@ -19,15 +19,13 @@ services:
         limits:
           cpus: '1.0'           # 限制最多使用 1 个 CPU 核心
           memory: 512M          # 限制最大内存为 512MB
+          pids: 100             # 限制容器最多创建 100 个进程
         reservations:
           cpus: '0.25'          # 预留 0.25 个 CPU 核心
           memory: 128M          # 预留 128MB 内存
 
     # 内存交换限制
     mem_swappiness: 0           # 禁用内存交换
-
-    # PID 限制
-    pids_limit: 100             # 限制容器最多创建 100 个进程
 
     # 安全选项
     security_opt:
