@@ -96,6 +96,8 @@ type DuckDBStore struct {
 	lastRecluster  time.Time
 }
 
+const duckDBSlowQueryThreshold = 500 * time.Millisecond
+
 // NewDuckDB 创建 DuckDB 存储实例。
 func NewDuckDB(path string) (*DuckDBStore, error) {
 	if err := ensureDir(path); err != nil {
@@ -253,6 +255,7 @@ func (s *DuckDBStore) InsertLog(ctx context.Context, entry LogEntry) error {
 
 // QueryLogs 查询日志列表。
 func (s *DuckDBStore) QueryLogs(ctx context.Context, q LogQuery) (LogResult, error) {
+	start := time.Now()
 	var (
 		builder strings.Builder
 		args    []any
@@ -298,10 +301,16 @@ func (s *DuckDBStore) QueryLogs(ctx context.Context, q LogQuery) (LogResult, err
 	}
 
 	countQuery := "SELECT COUNT(*) FROM logs" + whereClause
-	var total int64
+	var (
+		total        int64
+		countElapsed time.Duration
+	)
+	countStart := time.Now()
 	if err := s.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+		log.Printf("duckdb query logs failed: stage=count elapsed=%s container=%q searchLen=%d stream=%q level=%q limit=%d offset=%d err=%v", time.Since(start), q.ContainerName, len(q.Search), q.Stream, q.Level, limit, offset, err)
 		return LogResult{}, err
 	}
+	countElapsed = time.Since(countStart)
 
 	dataArgs := make([]any, len(args))
 	copy(dataArgs, args)
@@ -315,8 +324,10 @@ func (s *DuckDBStore) QueryLogs(ctx context.Context, q LogQuery) (LogResult, err
 		dataArgs = append(dataArgs, offset)
 	}
 
+	dataStart := time.Now()
 	rows, err := s.db.QueryContext(ctx, builder.String(), dataArgs...)
 	if err != nil {
+		log.Printf("duckdb query logs failed: stage=dataQuery elapsed=%s countElapsed=%s container=%q searchLen=%d stream=%q level=%q limit=%d offset=%d err=%v", time.Since(start), countElapsed, q.ContainerName, len(q.Search), q.Stream, q.Level, limit, offset, err)
 		return LogResult{}, err
 	}
 	defer rows.Close()
@@ -337,7 +348,14 @@ func (s *DuckDBStore) QueryLogs(ctx context.Context, q LogQuery) (LogResult, err
 		entries = append(entries, entry)
 	}
 	if err := rows.Err(); err != nil {
+		log.Printf("duckdb query logs failed: stage=dataScan elapsed=%s countElapsed=%s container=%q searchLen=%d stream=%q level=%q limit=%d offset=%d err=%v", time.Since(start), countElapsed, q.ContainerName, len(q.Search), q.Stream, q.Level, limit, offset, err)
 		return LogResult{}, err
+	}
+
+	dataElapsed := time.Since(dataStart)
+	elapsed := time.Since(start)
+	if elapsed > duckDBSlowQueryThreshold || q.Search != "" {
+		log.Printf("duckdb query logs: elapsed=%s countElapsed=%s dataElapsed=%s limit=%d offset=%d total=%d container=%q searchLen=%d stream=%q level=%q", elapsed, countElapsed, dataElapsed, limit, offset, total, q.ContainerName, len(q.Search), q.Stream, q.Level)
 	}
 
 	return LogResult{Entries: entries, Total: total}, nil

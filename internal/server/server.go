@@ -26,6 +26,8 @@ var verifyPage []byte
 //go:embed static/manager.html
 var managerPage []byte
 
+const logQuerySlowThreshold = 500 * time.Millisecond
+
 // Server 提供查询接口与简单界面。
 type Server struct {
 	store               storage.Store
@@ -321,6 +323,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := storage.LogQuery{}
+	start := time.Now()
 	params := r.URL.Query()
 	query.ContainerName = strings.TrimSpace(params.Get("container"))
 	query.Stream = strings.TrimSpace(params.Get("stream"))
@@ -358,10 +361,14 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := s.store.QueryLogs(r.Context(), query)
+	elapsed := time.Since(start)
 	if err != nil {
-		log.Printf("query logs failed: %v", err)
+		log.Printf("query logs failed: container=%q searchLen=%d limit=%d offset=%d elapsed=%s err=%v", query.ContainerName, len(query.Search), query.Limit, query.Offset, elapsed, err)
 		http.Error(w, "query failed", http.StatusInternalServerError)
 		return
+	}
+	if elapsed >= logQuerySlowThreshold || query.Search != "" {
+		log.Printf("query logs done: container=%q searchLen=%d limit=%d offset=%d total=%d elapsed=%s", query.ContainerName, len(query.Search), query.Limit, query.Offset, result.Total, elapsed)
 	}
 	response := map[string]any{
 		"items": result.Entries,
