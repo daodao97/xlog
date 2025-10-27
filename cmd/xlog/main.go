@@ -73,10 +73,14 @@ func main() {
 	if err := store.Init(ctx); err != nil {
 		log.Fatalf("初始化数据库失败: %v", err)
 	}
-
-	if cfg.Retention > 0 || cfg.MaxStorageBytes > 0 {
-		startMaintenance(ctx, store, cfg)
+	if err := store.EnsureIndexes(ctx); err != nil {
+		log.Fatalf("创建索引失败: %v", err)
 	}
+	if err := store.OptimizeStatistics(ctx); err != nil {
+		log.Printf("索引统计初始化失败: %v", err)
+	}
+
+	startMaintenance(ctx, store, cfg)
 
 	collectorOptions := collector.Options{
 		Tail:          cfg.Tail,
@@ -724,5 +728,27 @@ func runMaintenance(ctx context.Context, store storage.Store, cfg config) {
 		} else if removed > 0 {
 			log.Printf("按容量清理日志 %d 条 (限制 %dB)", removed, cfg.MaxStorageBytes)
 		}
+	}
+	if err := store.EnsureIndexes(ctx); err != nil {
+		log.Printf("索引检查失败: %v", err)
+	}
+	if err := store.OptimizeStatistics(ctx); err != nil {
+		log.Printf("统计信息刷新失败: %v", err)
+	}
+	minBytes := int64(512 * 1024 * 1024)
+	if cfg.MaxStorageBytes > 0 {
+		if half := cfg.MaxStorageBytes / 2; half > minBytes {
+			minBytes = half
+		}
+	}
+	if reclustered, err := store.ReclusterIfNeeded(ctx, storage.ReclusterOptions{
+		MinInterval:          6 * time.Hour,
+		MinTableBytes:        minBytes,
+		MinFragmentationRate: 0.2,
+		MinRowCount:          300000,
+	}); err != nil {
+		log.Printf("重排日志表失败: %v", err)
+	} else if reclustered {
+		log.Printf("已按容器+时间顺序重排日志表")
 	}
 }

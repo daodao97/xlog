@@ -110,6 +110,12 @@ docker compose up -d --build
 - 同样可通过 `XLOG_CONTAINER_ALLOW_PATTERNS`（逗号或换行分隔）或配置文件的 `containerAllowPatterns` 字段进行配置。
 - 白名单为空表示采集所有容器；更新后会立即生效，未匹配的容器会停止采集。
 
+## 日志维护与索引
+
+- 后台维护协程默认每小时运行一次：按 `XLOG_RETENTION` / `XLOG_MAX_STORAGE_BYTES` 清理旧日志，并自动检查索引、刷新统计信息。
+- 当日志文件大于 ~512MB（或超过 `XLOG_MAX_STORAGE_BYTES` 的一半）、行数超过 30 万且碎片率较高时，会自动触发重排，将数据按容器+时间重新排序，以提升查询性能。
+- 可通过 `duckdb` CLI 手动执行 `ANALYZE logs`、`PRAGMA optimize` 或 `VACUUM` 进一步优化；程序在维护流程中会自动尝试执行。
+
 ## API 说明
 
 - `GET /api/logs`
@@ -166,6 +172,16 @@ docker compose up -d --build
 - 第一次构建镜像或本地编译需要下载 Go 依赖，需确保网络可访问 Golang 模块仓库。
 - 服务运行依赖 Docker Socket 权限，请根据安全策略限制访问。
 - DuckDB 文件默认存放在 `./data` 目录，可根据需要挂载到其他路径或远程存储。
+
+## 辅助脚本
+
+- `scripts/cleanup.sh`：提供按保留时长与容量阈值的离线清理脚本，执行前确保安装 `duckdb` CLI。常用环境变量：
+  - `DB_PATH`（默认 `data/logs.duckdb`）
+  - `RETENTION_HOURS`（默认 720）
+  - `MAX_BYTES`（默认 2GB）
+  - `ARCHIVE_DIR`（默认 `backup/`，导出 Parquet 快照）
+- 可配置定时任务运行脚本：`DB_PATH=/data/logs.duckdb MAX_BYTES=$((10*1024*1024*1024)) ./scripts/cleanup.sh`
+- 脚本会自动导出最新快照、按批删除最旧日志并执行 `VACUUM` 与过期备份清理。
 
 欢迎根据自身需求扩展筛选条件、认证机制或对接告警系统。
 # container-log

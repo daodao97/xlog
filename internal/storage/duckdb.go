@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/marcboeker/go-duckdb/v2"
@@ -58,6 +59,14 @@ type Stats struct {
 	SizeBytes      int64 `json:"sizeBytes"`
 }
 
+// ReclusterOptions 控制日志表重排的触发条件。
+type ReclusterOptions struct {
+	MinInterval          time.Duration
+	MinTableBytes        int64
+	MinFragmentationRate float64
+	MinRowCount          int64
+}
+
 // Store 定义日志存储需要实现的接口。
 type Store interface {
 	Init(ctx context.Context) error
@@ -70,6 +79,9 @@ type Store interface {
 	ContainerStats(ctx context.Context) ([]ContainerStat, error)
 	DeleteContainerLogs(ctx context.Context, name string) (int64, error)
 	DeleteContainerLogsBefore(ctx context.Context, name string, cutoff time.Time) (int64, error)
+	EnsureIndexes(ctx context.Context) error
+	OptimizeStatistics(ctx context.Context) error
+	ReclusterIfNeeded(ctx context.Context, opts ReclusterOptions) (bool, error)
 	Close() error
 }
 
@@ -77,6 +89,11 @@ type Store interface {
 type DuckDBStore struct {
 	db   *sql.DB
 	path string
+
+	mu             sync.Mutex
+	lastIndexCheck time.Time
+	lastAnalyze    time.Time
+	lastRecluster  time.Time
 }
 
 // NewDuckDB 创建 DuckDB 存储实例。
@@ -203,13 +220,20 @@ func (s *DuckDBStore) Init(ctx context.Context) error {
 			message TEXT
 		)`,
 		`ALTER TABLE logs ADD COLUMN IF NOT EXISTS level VARCHAR`,
-		`CREATE INDEX IF NOT EXISTS logs_timestamp_idx ON logs(timestamp)`,
-		`CREATE INDEX IF NOT EXISTS logs_container_idx ON logs(container_name)`,
 	}
 	for _, query := range queries {
 		if _, err := s.db.ExecContext(ctx, query); err != nil {
 			return err
 		}
+	}
+	if err := s.ensureIDSequence(ctx); err != nil {
+		return err
+	}
+	if err := s.EnsureIndexes(ctx); err != nil {
+		return err
+	}
+	if err := s.OptimizeStatistics(ctx); err != nil {
+		log.Printf("初始化统计优化失败: %v", err)
 	}
 	return nil
 }
@@ -364,8 +388,65 @@ func (s *DuckDBStore) CleanupOlderThan(ctx context.Context, cutoff time.Time) (i
 		if err := s.safeVacuum(ctx); err != nil {
 			log.Printf("VACUUM 失败: %v", err)
 		}
+		if err := s.ensureIDSequence(ctx); err != nil {
+			log.Printf("重建序列失败: %v", err)
+		}
 	}
 	return affected, nil
+}
+
+// EnsureIndexes 创建关键索引以提升查询效率。
+func (s *DuckDBStore) EnsureIndexes(ctx context.Context) error {
+	s.mu.Lock()
+	if !s.lastIndexCheck.IsZero() && time.Since(s.lastIndexCheck) < 6*time.Hour {
+		s.mu.Unlock()
+		return nil
+	}
+	s.mu.Unlock()
+	statements := []string{
+		`CREATE INDEX IF NOT EXISTS logs_timestamp_idx ON logs(timestamp)`,
+		`CREATE INDEX IF NOT EXISTS logs_container_idx ON logs(container_name)`,
+		`CREATE INDEX IF NOT EXISTS logs_container_time_idx ON logs(container_name, timestamp)`,
+		`CREATE INDEX IF NOT EXISTS logs_stream_level_idx ON logs(stream, level)`,
+	}
+	for _, stmt := range statements {
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	s.mu.Lock()
+	s.lastIndexCheck = time.Now()
+	s.mu.Unlock()
+	return nil
+}
+
+// OptimizeStatistics 更新分析信息,便于 DuckDB 使用统计数据做更优计划。
+func (s *DuckDBStore) OptimizeStatistics(ctx context.Context) error {
+	s.mu.Lock()
+	if !s.lastAnalyze.IsZero() && time.Since(s.lastAnalyze) < 6*time.Hour {
+		s.mu.Unlock()
+		return nil
+	}
+	s.mu.Unlock()
+	if _, err := s.db.ExecContext(ctx, "ANALYZE logs"); err != nil {
+		return err
+	}
+	s.tryPragmaOptimize(ctx)
+	s.mu.Lock()
+	s.lastAnalyze = time.Now()
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *DuckDBStore) tryPragmaOptimize(ctx context.Context) {
+	if s.db == nil {
+		return
+	}
+	if _, err := s.db.ExecContext(ctx, "PRAGMA optimize"); err != nil {
+		if !strings.Contains(strings.ToLower(err.Error()), "optimize") {
+			log.Printf("PRAGMA optimize 执行失败: %v", err)
+		}
+	}
 }
 
 // CleanupExceedingSize 按容量限制清理历史日志。
@@ -432,6 +513,9 @@ func (s *DuckDBStore) CleanupExceedingSize(ctx context.Context, maxBytes int64) 
 			log.Printf("VACUUM 失败: %v", err)
 		} else {
 			log.Printf("空间回收完成")
+		}
+		if err := s.ensureIDSequence(ctx); err != nil {
+			log.Printf("重建序列失败: %v", err)
 		}
 	}
 	return totalDeleted, nil
@@ -582,6 +666,9 @@ func (s *DuckDBStore) DeleteContainerLogs(ctx context.Context, name string) (int
 			log.Printf("删除后健康检查失败: %v", err)
 			return totalDeleted, fmt.Errorf("删除成功但数据库可能已损坏: %w", err)
 		}
+		if err := s.ensureIDSequence(ctx); err != nil {
+			log.Printf("重建序列失败: %v", err)
+		}
 	}
 
 	return totalDeleted, nil
@@ -659,9 +746,123 @@ func (s *DuckDBStore) DeleteContainerLogsBefore(ctx context.Context, name string
 			log.Printf("删除后健康检查失败: %v", err)
 			return totalDeleted, fmt.Errorf("删除成功但数据库可能已损坏: %w", err)
 		}
+		if err := s.ensureIDSequence(ctx); err != nil {
+			log.Printf("重建序列失败: %v", err)
+		}
 	}
 
 	return totalDeleted, nil
+}
+
+// ReclusterIfNeeded 按需重新排序日志表,减少碎片并提升顺序扫描性能。
+func (s *DuckDBStore) ReclusterIfNeeded(ctx context.Context, opts ReclusterOptions) (bool, error) {
+	if s.db == nil {
+		return false, fmt.Errorf("database not initialized")
+	}
+	if opts.MinInterval <= 0 {
+		opts.MinInterval = 24 * time.Hour
+	}
+	if opts.MinTableBytes <= 0 {
+		opts.MinTableBytes = 512 * 1024 * 1024
+	}
+	if opts.MinFragmentationRate <= 0 {
+		opts.MinFragmentationRate = 0.15
+	}
+	if opts.MinRowCount <= 0 {
+		opts.MinRowCount = 500_000
+	}
+
+	s.mu.Lock()
+	if !s.lastRecluster.IsZero() && time.Since(s.lastRecluster) < opts.MinInterval {
+		s.mu.Unlock()
+		return false, nil
+	}
+	s.mu.Unlock()
+
+	size, err := s.fileSize()
+	if err != nil {
+		return false, err
+	}
+	if size < opts.MinTableBytes {
+		return false, nil
+	}
+
+	var totalRows int64
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM logs").Scan(&totalRows); err != nil {
+		return false, err
+	}
+	if totalRows < opts.MinRowCount {
+		return false, nil
+	}
+
+	var totalBlocks, freeBlocks int64
+	if err := s.db.QueryRowContext(ctx, "SELECT COALESCE(SUM(total_blocks), 0), COALESCE(SUM(free_blocks), 0) FROM pragma_database_size()").Scan(&totalBlocks, &freeBlocks); err != nil {
+		return false, err
+	}
+	if totalBlocks == 0 {
+		return false, nil
+	}
+	fragmentation := float64(freeBlocks) / float64(totalBlocks)
+	if fragmentation < opts.MinFragmentationRate {
+		return false, nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	tmpName := fmt.Sprintf("logs_recluster_%d", time.Now().UnixNano())
+	createSQL := fmt.Sprintf(`CREATE TABLE %s AS
+		SELECT id, timestamp, container_id, container_name, stream, level, message
+		FROM logs
+		ORDER BY COALESCE(container_name, ''), timestamp, id`, tmpName)
+	if _, err := tx.ExecContext(ctx, createSQL); err != nil {
+		tx.Rollback()
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, "DROP TABLE logs"); err != nil {
+		tx.Rollback()
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s RENAME TO logs", tmpName)); err != nil {
+		tx.Rollback()
+		return false, err
+	}
+	var maxID int64
+	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(id), 0) FROM logs").Scan(&maxID); err != nil {
+		tx.Rollback()
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+
+	s.mu.Lock()
+	s.lastIndexCheck = time.Time{}
+	s.lastAnalyze = time.Time{}
+	s.mu.Unlock()
+
+	if err := s.ensureIDSequence(ctx); err != nil {
+		return false, err
+	}
+	if err := s.EnsureIndexes(ctx); err != nil {
+		return false, err
+	}
+	if err := s.OptimizeStatistics(ctx); err != nil {
+		log.Printf("重排后统计更新失败: %v", err)
+	}
+	if err := s.safeCheckpoint(ctx); err != nil {
+		log.Printf("重排后 checkpoint 失败: %v", err)
+	}
+	if err := s.safeVacuum(ctx); err != nil {
+		log.Printf("重排后 VACUUM 失败: %v", err)
+	}
+
+	s.mu.Lock()
+	s.lastRecluster = time.Now()
+	s.mu.Unlock()
+
+	return true, nil
 }
 
 func (s *DuckDBStore) ensureCheckpoint() {
@@ -672,6 +873,73 @@ func (s *DuckDBStore) ensureCheckpoint() {
 	if _, err := s.db.ExecContext(ctx, "CHECKPOINT"); err != nil && !errors.Is(err, context.Canceled) {
 		log.Printf("duckdb checkpoint failed: %v", err)
 	}
+}
+
+func (s *DuckDBStore) ensureIDSequence(ctx context.Context) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("database not initialized")
+	}
+	var maxID sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, "SELECT MAX(id) FROM logs").Scan(&maxID); err != nil {
+		return err
+	}
+	start := int64(1)
+	if maxID.Valid {
+		start = maxID.Int64 + 1
+	}
+	var seqCount int
+	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM information_schema.sequences WHERE lower(sequence_name) = 'logs_id_seq'").Scan(&seqCount)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "sequences") {
+			seqCount = -1
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+	}
+	if seqCount <= 0 {
+		createSQL := fmt.Sprintf("CREATE SEQUENCE IF NOT EXISTS logs_id_seq START %d", start)
+		if _, err := s.db.ExecContext(ctx, createSQL); err != nil {
+			errLower := strings.ToLower(err.Error())
+			if !strings.Contains(errLower, "exists") {
+				return err
+			}
+		}
+	} else {
+		if _, err := s.db.ExecContext(ctx, fmt.Sprintf("ALTER SEQUENCE logs_id_seq RESTART WITH %d", start)); err != nil {
+			errLower := strings.ToLower(err.Error())
+			if strings.Contains(errLower, "not supported") {
+				log.Printf("跳过调整序列起点: %v", err)
+			} else {
+				return err
+			}
+		}
+	}
+	var defaultValue sql.NullString
+	row := s.db.QueryRowContext(ctx, "SELECT dflt_value FROM pragma_table_info('logs') WHERE name='id'")
+	switch err := row.Scan(&defaultValue); err {
+	case nil:
+	case sql.ErrNoRows:
+		return nil
+	default:
+		return err
+	}
+	needsUpdate := true
+	if defaultValue.Valid {
+		lower := strings.ToLower(defaultValue.String)
+		if strings.Contains(lower, "nextval") && strings.Contains(lower, "logs_id_seq") {
+			needsUpdate = false
+		}
+	}
+	if needsUpdate {
+		if _, err := s.db.ExecContext(ctx, "ALTER TABLE logs ALTER COLUMN id SET DEFAULT nextval('logs_id_seq')"); err != nil {
+			if strings.Contains(err.Error(), "Dependency Error") {
+				log.Printf("跳过更新 id 默认序列: %v", err)
+			} else {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // safeCheckpoint 在指定 context 下安全地执行 checkpoint
