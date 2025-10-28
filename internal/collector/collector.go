@@ -379,6 +379,9 @@ func (w *logWriter) flushLine(line string) {
 		Message:       message,
 	}
 	if err := w.store.InsertLog(w.ctx, entry); err != nil {
+		if errors.Is(err, context.Canceled) && w.ctx.Err() != nil {
+			return
+		}
 		log.Printf("insert log failed: %v", err)
 	}
 }

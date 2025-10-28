@@ -94,6 +94,8 @@ type DuckDBStore struct {
 	lastIndexCheck time.Time
 	lastAnalyze    time.Time
 	lastRecluster  time.Time
+	lastFTSCheck   time.Time
+	ftsEnabled     bool
 }
 
 const duckDBSlowQueryThreshold = 500 * time.Millisecond
@@ -234,6 +236,11 @@ func (s *DuckDBStore) Init(ctx context.Context) error {
 	if err := s.EnsureIndexes(ctx); err != nil {
 		return err
 	}
+	if err := s.ensureFTSIndex(ctx); err != nil {
+		log.Printf("初始化全文索引失败: %v", err)
+	} else {
+		log.Printf("初始化全文索引成功")
+	}
 	if err := s.OptimizeStatistics(ctx); err != nil {
 		log.Printf("初始化统计优化失败: %v", err)
 	}
@@ -246,11 +253,30 @@ func (s *DuckDBStore) InsertLog(ctx context.Context, entry LogEntry) error {
 	if entry.Level != "" {
 		entry.Level = strings.ToLower(entry.Level)
 	}
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO logs (timestamp, container_id, container_name, stream, level, message)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, entry.Timestamp, entry.ContainerID, entry.ContainerName, entry.Stream, entry.Level, entry.Message)
-	return err
+	args := []any{entry.Timestamp, entry.ContainerID, entry.ContainerName, entry.Stream, entry.Level, entry.Message}
+	exec := func(runCtx context.Context) error {
+		if runCtx == nil {
+			runCtx = context.Background()
+		}
+		_, err := s.db.ExecContext(runCtx, `
+			INSERT INTO logs (timestamp, container_id, container_name, stream, level, message)
+			VALUES (?, ?, ?, ?, ?, ?)
+		`, args...)
+		return err
+	}
+	if err := exec(ctx); err != nil {
+		if errors.Is(err, context.Canceled) {
+			if ctx != nil && ctx.Err() != nil {
+				return err
+			}
+			if retryErr := exec(context.Background()); retryErr != nil {
+				return retryErr
+			}
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // QueryLogs 查询日志列表。
@@ -282,9 +308,15 @@ func (s *DuckDBStore) QueryLogs(ctx context.Context, q LogQuery) (LogResult, err
 		filters = append(filters, "timestamp <= ?")
 		args = append(args, q.Until.UTC())
 	}
+	useFTS := q.Search != "" && s.isFTSEnabled()
 	if q.Search != "" {
-		filters = append(filters, "LOWER(message) LIKE ?")
-		args = append(args, "%"+strings.ToLower(q.Search)+"%")
+		if useFTS {
+			filters = append(filters, "fts_main_logs.match(?)")
+			args = append(args, q.Search)
+		} else {
+			filters = append(filters, "LOWER(message) LIKE ?")
+			args = append(args, "%"+strings.ToLower(q.Search)+"%")
+		}
 	}
 	whereClause := ""
 	if len(filters) > 0 {
@@ -435,6 +467,9 @@ func (s *DuckDBStore) EnsureIndexes(ctx context.Context) error {
 	s.mu.Lock()
 	s.lastIndexCheck = time.Now()
 	s.mu.Unlock()
+	if err := s.ensureFTSIndex(ctx); err != nil {
+		log.Printf("刷新全文索引失败: %v", err)
+	}
 	return nil
 }
 
@@ -454,6 +489,37 @@ func (s *DuckDBStore) OptimizeStatistics(ctx context.Context) error {
 	s.lastAnalyze = time.Now()
 	s.mu.Unlock()
 	return nil
+}
+
+func (s *DuckDBStore) ensureFTSIndex(ctx context.Context) error {
+	s.mu.Lock()
+	lastCheck := s.lastFTSCheck
+	enabled := s.ftsEnabled
+	s.mu.Unlock()
+	if enabled && time.Since(lastCheck) < 6*time.Hour {
+		return nil
+	}
+	if _, err := s.db.ExecContext(ctx, "LOAD 'fts'"); err != nil {
+		return fmt.Errorf("加载 fts 扩展失败: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, "PRAGMA create_fts_index('logs', 'message')"); err != nil {
+		errMsg := err.Error()
+		if !strings.Contains(errMsg, "already exists") {
+			return fmt.Errorf("创建 fts 索引失败: %w", err)
+		}
+	}
+	s.mu.Lock()
+	s.lastFTSCheck = time.Now()
+	s.ftsEnabled = true
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *DuckDBStore) isFTSEnabled() bool {
+	s.mu.Lock()
+	enabled := s.ftsEnabled
+	s.mu.Unlock()
+	return enabled
 }
 
 func (s *DuckDBStore) tryPragmaOptimize(ctx context.Context) {
