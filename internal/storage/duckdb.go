@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/marcboeker/go-duckdb/v2"
+	_ "github.com/duckdb/duckdb-go/v2"
 )
 
 // LogEntry 表示一条日志记录。
@@ -504,8 +504,11 @@ func (s *DuckDBStore) ensureFTSIndex(ctx context.Context) error {
 			return loadErr
 		}
 	}
-	if _, err := s.db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS logs_message_fts ON logs USING fts(message)"); err != nil {
-		return fmt.Errorf("创建 fts 索引失败: %w", err)
+	if _, err := s.db.ExecContext(ctx, "PRAGMA create_fts_index('logs', 'message')"); err != nil {
+		errMsg := err.Error()
+		if !strings.Contains(errMsg, "already exists") {
+			return fmt.Errorf("创建 fts 索引失败: %w", err)
+		}
 	}
 	s.mu.Lock()
 	s.lastFTSCheck = time.Now()
