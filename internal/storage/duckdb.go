@@ -504,8 +504,8 @@ func (s *DuckDBStore) ensureFTSIndex(ctx context.Context) error {
 			return loadErr
 		}
 	}
-	if err := s.createFTSIndex(ctx); err != nil {
-		return err
+	if _, err := s.db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS logs_message_fts ON logs USING fts(message)"); err != nil {
+		return fmt.Errorf("创建 fts 索引失败: %w", err)
 	}
 	s.mu.Lock()
 	s.lastFTSCheck = time.Now()
@@ -529,42 +529,6 @@ func (s *DuckDBStore) installAndLoadFTS(ctx context.Context, originalErr error) 
 		return fmt.Errorf("加载 fts 扩展失败: %w", err)
 	}
 	return nil
-}
-
-func (s *DuckDBStore) createFTSIndex(ctx context.Context) error {
-	commands := []string{
-		"PRAGMA create_fts_index('main', 'logs', 'message')",
-		"PRAGMA create_fts_index('logs', 'message')",
-	}
-	for _, cmd := range commands {
-		if _, err := s.db.ExecContext(ctx, cmd); err != nil {
-			errMsg := err.Error()
-			if strings.Contains(errMsg, "already exists") {
-				return nil
-			}
-			if strings.Contains(strings.ToLower(errMsg), "at least one column must be supplied") {
-				continue
-			}
-			if strings.Contains(strings.ToLower(errMsg), "duplicate key name") {
-				return nil
-			}
-			if strings.Contains(strings.ToLower(errMsg), "invalid table") {
-				return err
-			}
-			if strings.Contains(strings.ToLower(errMsg), "does not exist") {
-				return err
-			}
-			if strings.Contains(strings.ToLower(errMsg), "must be supplied") {
-				continue
-			}
-			if cmd == commands[len(commands)-1] {
-				return fmt.Errorf("创建 fts 索引失败: %w", err)
-			}
-			continue
-		}
-		return nil
-	}
-	return fmt.Errorf("创建 fts 索引失败: 未能选择有效命令")
 }
 
 func (s *DuckDBStore) tryPragmaOptimize(ctx context.Context) {
