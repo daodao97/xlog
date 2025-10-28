@@ -500,7 +500,9 @@ func (s *DuckDBStore) ensureFTSIndex(ctx context.Context) error {
 		return nil
 	}
 	if _, err := s.db.ExecContext(ctx, "LOAD 'fts'"); err != nil {
-		return fmt.Errorf("加载 fts 扩展失败: %w", err)
+		if loadErr := s.installAndLoadFTS(ctx, err); loadErr != nil {
+			return loadErr
+		}
 	}
 	if _, err := s.db.ExecContext(ctx, "PRAGMA create_fts_index('logs', 'message')"); err != nil {
 		errMsg := err.Error()
@@ -520,6 +522,16 @@ func (s *DuckDBStore) isFTSEnabled() bool {
 	enabled := s.ftsEnabled
 	s.mu.Unlock()
 	return enabled
+}
+
+func (s *DuckDBStore) installAndLoadFTS(ctx context.Context, originalErr error) error {
+	if _, err := s.db.ExecContext(ctx, "INSTALL fts"); err != nil {
+		return fmt.Errorf("加载 fts 扩展失败: %w", originalErr)
+	}
+	if _, err := s.db.ExecContext(ctx, "LOAD 'fts'"); err != nil {
+		return fmt.Errorf("加载 fts 扩展失败: %w", err)
+	}
+	return nil
 }
 
 func (s *DuckDBStore) tryPragmaOptimize(ctx context.Context) {
