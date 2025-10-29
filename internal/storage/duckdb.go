@@ -504,11 +504,26 @@ func (s *DuckDBStore) ensureFTSIndex(ctx context.Context) error {
 			return loadErr
 		}
 	}
-	if _, err := s.db.ExecContext(ctx, "PRAGMA create_fts_index('logs', 'message')"); err != nil {
-		errMsg := err.Error()
-		if !strings.Contains(errMsg, "already exists") {
-			return fmt.Errorf("创建 fts 索引失败: %w", err)
+	statements := []string{
+		"PRAGMA create_fts_index('logs', 'id', 'message')",
+		"PRAGMA create_fts_index('logs', 'message')",
+	}
+	var lastErr error
+	for _, stmt := range statements {
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+			errMsg := err.Error()
+			if strings.Contains(errMsg, "already exists") {
+				lastErr = nil
+				break
+			}
+			lastErr = err
+			continue
 		}
+		lastErr = nil
+		break
+	}
+	if lastErr != nil {
+		return fmt.Errorf("创建 fts 索引失败: %w", lastErr)
 	}
 	s.mu.Lock()
 	s.lastFTSCheck = time.Now()
